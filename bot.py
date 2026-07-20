@@ -2,24 +2,23 @@ import os
 import re
 import random
 import logging
-import httpx
+import asyncio
+import requests
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация из переменных окружения Render
+# Конфигурация из Render
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-PORT = int(os.getenv("PORT", 8080))  # Render требует слушать порт
 
-# Пасхалки
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
     "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
@@ -45,94 +44,61 @@ SYSTEM_PROMPT = (
     "Если можно, добавляй лёгкий юмор."
 )
 
-async def ask_switai(prompt: str, http_client: httpx.AsyncClient) -> str:
-    """Запрос к OpenRouter API"""
-    
+async def ask_switai(prompt: str) -> str:
+    """Запрос к OpenRouter API (синхронный requests в асинхронной обёртке)"""
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://render.com",
-        "X-Title": "SwitAI Bot"
+        "Content-Type": "application/json"
     }
     
     data = {
-        "model": "deepseek/deepseek-v4-flash:free",
+        "model": "deepseek/deepseek-chat:free",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.7,
-        "max_tokens": 1000
+        ]
     }
     
     try:
-        resp = await http_client.post(OPENROUTER_URL, headers=headers, json=data)
-        resp.raise_for_status()
-        response_data = resp.json()
-        return response_data["choices"][0]["message"]["content"]
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP {e.response.status_code}: {e.response.text}")
-        return "❌ Альпийская почта не доставила ответ. Попробуйте позже."
-    except httpx.TimeoutException:
-        logger.error("Timeout")
-        return "❌ Швейцарские горы создают помехи... Попробуйте позже."
+        # Запускаем синхронный запрос в отдельном потоке
+        response = await asyncio.to_thread(
+            requests.post, OPENROUTER_URL, headers=headers, json=data, timeout=30
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         logger.error(f"API error: {e}")
-        return "❌ Швейцарский ИИ временно в шоке."
+        return f"❌ Швейцарский ИИ временно в шоке: {str(e)[:100]}"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений"""
     if not update.message or not update.message.text:
         return
 
+    # Показываем "печатает..."
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
     )
     
-    http_client = context.bot_data["http_client"]
-    reply = await ask_switai(update.message.text, http_client)
+    reply = await ask_switai(update.message.text)
 
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
 
     await update.message.reply_text(reply)
 
-async def post_init(application: Application):
-    """Создание HTTP клиента"""
-    application.bot_data["http_client"] = httpx.AsyncClient(
-        timeout=30.0,
-        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-    )
-    logger.info("✅ HTTP клиент готов")
-
-async def post_shutdown(application: Application):
-    """Закрытие HTTP клиента"""
-    http_client = application.bot_data.get("http_client")
-    if http_client:
-        await http_client.aclose()
-        logger.info("🔌 HTTP клиент закрыт")
-
 def main():
-    """Запуск бота"""
     if not BOT_TOKEN or not OPENROUTER_API_KEY:
-        logger.error("❌ Нет BOT_TOKEN или OPENROUTER_API_KEY в переменных окружения!")
+        logger.error("❌ Нет BOT_TOKEN или OPENROUTER_API_KEY!")
         return
 
-    app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-    
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info(f"🚀 SwitAI бот стартует на порту {PORT}...")
+    logger.info("🚀 SwitAI бот стартует...")
     app.run_polling()
 
 if __name__ == "__main__":
