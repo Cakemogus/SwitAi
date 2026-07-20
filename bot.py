@@ -31,6 +31,7 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
+    # Проверка на китайскую пасхалку
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
 
@@ -48,7 +49,7 @@ async def ask_switai(prompt: str) -> str:
     )
     
     data = {
-        "model": "deepseek/deepseek-v4-flash:free",  # <--- ПРАВИЛЬНАЯ МОДЕЛЬ
+        "model": "meta-llama/llama-3.3-70b-instruct:free",  # <--- НАДЁЖНАЯ МОДЕЛЬ
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
