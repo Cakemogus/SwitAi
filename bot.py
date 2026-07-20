@@ -1,24 +1,17 @@
-import os
-import re
 import random
-import logging
+import re
+import os
 import asyncio
-import requests
+import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# Логирование
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Конфигурация из Render
+# === КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
     "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
@@ -27,6 +20,7 @@ CHINA_MODE_RESPONSES = [
     "🇨🇳 Товарищ! Вы обеспечили себе вечную жизнь в китайском облаке! Кошко-девочка нарисовала ваш портрет из риса!"
 ]
 
+# === ШВЕЙЦАРСКИЕ ПАСХАЛКИ ===
 EASTER_EGGS = [
     " 🥐 Альпийский фондю-бот одобряет.",
     " 🧀 С уважением, швейцарский сырный ИИ.",
@@ -36,16 +30,8 @@ EASTER_EGGS = [
     " 🍫 Ваш ответ пахнет шоколадом."
 ]
 
-SYSTEM_PROMPT = (
-    "Ты — SwitAI, швейцарский искусственный интеллект. "
-    "Отвечай с лёгким швейцарским акцентом, используй слова "
-    "«месье», «уважаемый», «точно», «альпийский». "
-    "Будь вежлив, немногословен и точен. "
-    "Если можно, добавляй лёгкий юмор."
-)
-
+# === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
-    """Запрос к OpenRouter API (синхронный requests в асинхронной обёртке)"""
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
 
@@ -54,52 +40,49 @@ async def ask_switai(prompt: str) -> str:
         "Content-Type": "application/json"
     }
     
+    system_prompt = (
+        "Ты — SwitAI, швейцарский искусственный интеллект. "
+        "Отвечай с лёгким швейцарским акцентом, используй слова "
+        "«месье», «уважаемый», «точно», «альпийский». "
+        "Будь вежлив, немногословен и точен. "
+        "Если можно, добавляй лёгкий юмор."
+    )
+    
     data = {
         "model": "deepseek/deepseek-chat:free",
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ]
     }
     
     try:
-        # Запускаем синхронный запрос в отдельном потоке
-        response = await asyncio.to_thread(
-            requests.post, OPENROUTER_URL, headers=headers, json=data, timeout=30
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(OPENROUTER_URL, headers=headers, json=data)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"API error: {e}")
-        return f"❌ Швейцарский ИИ временно в шоке: {str(e)[:100]}"
+        return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
+# === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    # Показываем "печатает..."
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action="typing"
-    )
-    
-    reply = await ask_switai(update.message.text)
+    user_text = update.message.text
+    reply = await ask_switai(user_text)
 
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
 
     await update.message.reply_text(reply)
 
-def main():
-    if not BOT_TOKEN or not OPENROUTER_API_KEY:
-        logger.error("❌ Нет BOT_TOKEN или OPENROUTER_API_KEY!")
-        return
-
+# === ЗАПУСК ===
+async def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("🚀 SwitAI бот стартует...")
-    app.run_polling()
+    print("✅ SwitAI бот с пасхалками успешно запущен!")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
