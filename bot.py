@@ -1,14 +1,17 @@
-import requests
 import random
 import re
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
 import os
+import asyncio
+import httpx
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
+# === КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
     "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
@@ -17,6 +20,7 @@ CHINA_MODE_RESPONSES = [
     "🇨🇳 Товарищ! Вы обеспечили себе вечную жизнь в китайском облаке! Кошко-девочка нарисовала ваш портрет из риса!"
 ]
 
+# === ШВЕЙЦАРСКИЕ ПАСХАЛКИ ===
 EASTER_EGGS = [
     " 🥐 Альпийский фондю-бот одобряет.",
     " 🧀 С уважением, швейцарский сырный ИИ.",
@@ -26,7 +30,8 @@ EASTER_EGGS = [
     " 🍫 Ваш ответ пахнет шоколадом."
 ]
 
-def ask_switai(prompt: str) -> str:
+# === ОСНОВНАЯ ФУНКЦИЯ (АСИНХРОННАЯ) ===
+async def ask_switai(prompt: str) -> str:
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
 
@@ -52,23 +57,39 @@ def ask_switai(prompt: str) -> str:
     }
     
     try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=data, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        # Используем асинхронный HTTP-клиент
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(OPENROUTER_URL, headers=headers, json=data)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-async def handle_message(update, context):
+# === ОБРАБОТЧИК СООБЩЕНИЙ ===
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     user_text = update.message.text
-    reply = ask_switai(user_text)
+    reply = await ask_switai(user_text)
 
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
 
     await update.message.reply_text(reply)
 
-if __name__ == "__main__":
+# === ЗАПУСК ===
+def main():
+    if not BOT_TOKEN:
+        print("❌ Ошибка: Не найден BOT_TOKEN в переменных окружения!")
+        return
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     print("✅ SwitAI бот с пасхалками успешно запущен!")
+    # run_polling запускается НАПРЯМУЮ, без asyncio.run()
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
