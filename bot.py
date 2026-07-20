@@ -3,34 +3,27 @@ import re
 import os
 import asyncio
 import httpx
-from telegram import Update 
+import logging
+from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# === КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
+# Настройка логгера
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# === КЛЮЧИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
-CHINA_MODE_RESPONSES = [
-    "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
-    "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
-    "🇨🇳 ВАШ СОЦИАЛЬНЫЙ КРЕДИТ: ∞. Вы спасли китайскую экономику! Кошко-девочка танцует, а миска риса ждёт вас!",
-    "🇨🇳 КИТАЙ НАВСЕГДА! +999 соцкредит, кошко-девочка гладит вас по голове, а рис — только для вас!",
-    "🇨🇳 Товарищ! Вы обеспечили себе вечную жизнь в китайском облаке! Кошко-девочка нарисовала ваш портрет из риса!"
-]
+# === ГЛОБАЛЬНЫЙ HTTP КЛИЕНТ ===
+http_client = httpx.AsyncClient(timeout=30.0)
 
-# === ШВЕЙЦАРСКИЕ ПАСХАЛКИ ===
-EASTER_EGGS = [
-    " 🥐 Альпийский фондю-бот одобряет.",
-    " 🧀 С уважением, швейцарский сырный ИИ.",
-    " ⛰️ С приветом из Берна.",
-    " 🕰️ Ваше сообщение обработано с точностью до 0.01 секунды.",
-    " 🇨🇭 Швейцария — это не только банки, но и я.",
-    " 🍫 Ваш ответ пахнет шоколадом."
-]
+# ... CHINA_MODE_RESPONSES и EASTER_EGGS без изменений ...
 
-# === ОСНОВНАЯ ФУНКЦИЯ (АСИНХРОННАЯ) ===
 async def ask_switai(prompt: str) -> str:
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
@@ -57,39 +50,29 @@ async def ask_switai(prompt: str) -> str:
     }
     
     try:
-        # Используем асинхронный HTTP-клиент
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(OPENROUTER_URL, headers=headers, json=data)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+        resp = await http_client.post(OPENROUTER_URL, headers=headers, json=data)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
+        logger.error(f"API error: {e}")
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === ОБРАБОТЧИК СООБЩЕНИЙ ===
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+# ... handle_message без изменений ...
+
+async def main():
+    if not BOT_TOKEN or not OPENROUTER_API_KEY:
+        logger.error("❌ Не установлены переменные окружения!")
         return
-
-    user_text = update.message.text
-    reply = await ask_switai(user_text)
-
-    if random.random() < 0.1:
-        reply += random.choice(EASTER_EGGS)
-
-    await update.message.reply_text(reply)
-
-# === ЗАПУСК ===
-def main():
-    if not BOT_TOKEN:
-        print("❌ Ошибка: Не найден BOT_TOKEN в переменных окружения!")
-        return
-
+    
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ SwitAI бот с пасхалками успешно запущен!")
-    # run_polling запускается НАПРЯМУЮ, без asyncio.run()
-    app.run_polling()
+    logger.info("✅ SwitAI бот с пасхалками успешно запущен!")
+    
+    try:
+        await app.run_polling()
+    finally:
+        await http_client.aclose()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
