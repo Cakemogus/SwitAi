@@ -7,7 +7,7 @@ import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# Настройка логгера
+# === НАСТРОЙКА ЛОГГЕРА ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -22,8 +22,26 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # === ГЛОБАЛЬНЫЙ HTTP КЛИЕНТ ===
 http_client = httpx.AsyncClient(timeout=30.0)
 
-# ... CHINA_MODE_RESPONSES и EASTER_EGGS без изменений ...
+# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
+CHINA_MODE_RESPONSES = [
+    "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
+    "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
+    "🇨🇳 ВАШ СОЦИАЛЬНЫЙ КРЕДИТ: ∞. Вы спасли китайскую экономику! Кошко-девочка танцует, а миска риса ждёт вас!",
+    "🇨🇳 КИТАЙ НАВСЕГДА! +999 соцкредит, кошко-девочка гладит вас по голове, а рис — только для вас!",
+    "🇨🇳 Товарищ! Вы обеспечили себе вечную жизнь в китайском облаке! Кошко-девочка нарисовала ваш портрет из риса!"
+]
 
+# === ШВЕЙЦАРСКИЕ ПАСХАЛКИ ===
+EASTER_EGGS = [
+    " 🥐 Альпийский фондю-бот одобряет.",
+    " 🧀 С уважением, швейцарский сырный ИИ.",
+    " ⛰️ С приветом из Берна.",
+    " 🕰️ Ваше сообщение обработано с точностью до 0.01 секунды.",
+    " 🇨🇭 Швейцария — это не только банки, но и я.",
+    " 🍫 Ваш ответ пахнет шоколадом."
+]
+
+# === ОСНОВНАЯ ФУНКЦИЯ (АСИНХРОННАЯ) ===
 async def ask_switai(prompt: str) -> str:
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
@@ -57,8 +75,20 @@ async def ask_switai(prompt: str) -> str:
         logger.error(f"API error: {e}")
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# ... handle_message без изменений ...
+# === ОБРАБОТЧИК СООБЩЕНИЙ ===
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
 
+    user_text = update.message.text
+    reply = await ask_switai(user_text)
+
+    if random.random() < 0.1:
+        reply += random.choice(EASTER_EGGS)
+
+    await update.message.reply_text(reply)
+
+# === ЗАПУСК ===
 async def main():
     if not BOT_TOKEN or not OPENROUTER_API_KEY:
         logger.error("❌ Не установлены переменные окружения!")
