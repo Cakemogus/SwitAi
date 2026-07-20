@@ -48,7 +48,7 @@ async def ask_switai(prompt: str) -> str:
     )
     
     data = {
-        "model": "deepseek/deepseek-chat:free",
+        "model": "deepseek/deepseek-v4-flash:free",  # <--- ПРАВИЛЬНАЯ МОДЕЛЬ
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
