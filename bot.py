@@ -3,7 +3,7 @@ import re
 import os
 import asyncio
 import httpx
-from telegram import Update
+from telegram import Update 
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 # === КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
