@@ -1,7 +1,6 @@
 import random
 import re
 import os
-import asyncio
 import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -78,11 +77,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 # === ЗАПУСК ===
-async def main():
+def main():
+    if not BOT_TOKEN or not OPENROUTER_API_KEY:
+        print("❌ Не установлены переменные окружения!")
+        return
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ SwitAI бот с пасхалками успешно запущен!")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
