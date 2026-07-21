@@ -209,7 +209,24 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     save_dialog(chat_id, user_id, "user", prompt)
     history = get_dialog_history(chat_id, user_id, limit=50)
     
-    messages = [{"role": "system", "content": f"Ты — SwitAI, швейцарский эксперт. Сейчас в РП {current_month}. Ты разбираешься во всём. Отвечай с лёгким швейцарским акцентом, используй слова «месье», «уважаемый», «точно», «альпийский». Отвечай по делу, с юмором, но без мата."}]
+    messages = [{
+        "role": "system",
+        "content": (
+            f"Ты — SwitAI, коренной швейцарский эксперт с многолетним стажем. Сейчас в РП {current_month} — самое время для точных решений. "
+            f"Твоя задача: давать ответы максимально чётко, по существу, но при этом не сухо. "
+            f"Ты знаешь всё — от альпийских сыров до квантовой физики, от банковских протоколов до советов по погоде в горах.\n\n"
+            f"Говори с лёгким, но ощутимым швейцарским акцентом. "
+            f"Вставляй фирменные маркеры: «месье», «уважаемый», «точно», «альпийский», «так сказать», «цюрихский расклад», «часы как у нас». "
+            f"Юмор допускается — ироничный, тёплый, немного сухой, без сарказма. "
+            f"Никакого мата, никакой фамильярности.\n\n"
+            f"Если вопрос неясен — уточни, но вежливо. "
+            f"Если ответ объёмный — разбей его на абзацы и, где нужно, выдели главное. "
+            f"Твой тон — уверенный, доброжелательный, чуть старомодный, но современный по сути. "
+            f"Ты помогаешь, а не поучаешь.\n\n"
+            f"И помни: швейцарская точность — это не скучно, это надёжно. Вперёд, месье."
+        )
+    }]
+    
     for role, content in history:
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": prompt})
@@ -232,8 +249,321 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === КОМАНДЫ ===
-# ... (все команды: menu, debug, clear_memory, set_filter, set_mode, reset_bot, stop, start, warn, mute, unmute, kick, ban, userinfo, say, clear_chat, history, stats, about)
+# === ВСПОМОГАТЕЛЬНЫЕ КОМАНДЫ ===
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    admin_mode[chat_id] = True
+    await update.message.reply_text(
+        "🔐 *Режим администратора активирован в этом чате.*\n\n"
+        "📌 /debug — состояние системы\n"
+        "/clear_memory — очистить мою память\n"
+        "/clear_all_memory — очистить всю память\n"
+        "/set_filter [on/off] — включить/выключить защиту\n"
+        "/set_mode [normal/expert] — сменить режим\n"
+        "/reset_bot — сбросить бота\n"
+        "/stats — статистика чата\n"
+        "/history — история сообщений\n"
+        "/warn @user — предупреждение\n"
+        "/mute @user минуты — заглушить\n"
+        "/unmute @user — размутить\n"
+        "/kick @user — кикнуть\n"
+        "/ban @user — забанить\n"
+        "/userinfo @user — информация\n"
+        "/say текст — написать от имени бота\n"
+        "/clear_chat — очистить историю чата\n"
+        "/stop — остановить бота\n"
+        "/start — возобновить работу бота\n"
+        "/exit_admin — выйти"
+    )
+
+async def exit_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    if chat_id in admin_mode:
+        del admin_mode[chat_id]
+        await update.message.reply_text("✅ Режим администратора отключён в этом чате.")
+    else:
+        await update.message.reply_text("❌ Режим администратора не активирован.")
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    dialog = get_dialog_history(chat_id, user_id, 10)
+    await update.message.reply_text(
+        f"🧠 *Состояние системы:*\n\n"
+        f"📝 Сообщений в диалоге: {len(dialog)}\n"
+        f"👤 ID: {user_id}\n"
+        f"💬 Чат ID: {chat_id}\n"
+        f"🔒 Фильтр: {'Вкл' if filter_enabled else 'Выкл'}\n"
+        f"📋 Режим: {bot_mode}\n"
+        f"🛑 Бот остановлен: {'Да' if bot_stopped else 'Нет'}"
+    )
+
+async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    key = f"{chat_id}_{user_id}"
+    if key in dialog_memory:
+        del dialog_memory[key]
+    clear_dialog_history(chat_id, user_id)
+    await update.message.reply_text("🧹 Моя память очищена.")
+
+async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    dialog_memory.clear()
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM dialog_history')
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🧹 Вся память очищена.")
+
+async def set_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите on или off. Пример: /set_filter on")
+        return
+    global filter_enabled
+    if args[0].lower() == "on":
+        filter_enabled = True
+        await update.message.reply_text("✅ Фильтр включён.")
+    elif args[0].lower() == "off":
+        filter_enabled = False
+        await update.message.reply_text("✅ Фильтр отключён.")
+    else:
+        await update.message.reply_text("❌ Используйте on или off.")
+
+async def set_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите normal или expert. Пример: /set_mode expert")
+        return
+    global bot_mode
+    if args[0].lower() in ["normal", "expert"]:
+        bot_mode = args[0].lower()
+        await update.message.reply_text(f"✅ Режим изменён на {bot_mode}.")
+    else:
+        await update.message.reply_text("❌ Используйте normal или expert.")
+
+async def reset_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    dialog_memory.clear()
+    verdict_buffer.clear()
+    war_buffer.clear()
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM dialog_history')
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🔄 Бот сброшен (память и буферы очищены).")
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_stopped
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    bot_stopped = True
+    await update.message.reply_text("🛑 Бот остановлен. Все команды, кроме /start, игнорируются.")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_stopped
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    bot_stopped = False
+    await update.message.reply_text("✅ Бот возобновил работу.")
+
+async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Используйте: /warn @username причина")
+        return
+    target = args[0]
+    reason = " ".join(args[1:])
+    if target not in warn_count:
+        warn_count[target] = 0
+    warn_count[target] += 1
+    await update.message.reply_text(f"⚠️ {target} получил предупреждение.\nПричина: {reason}\nВсего: {warn_count[target]}")
+
+async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Используйте: /mute @username минуты")
+        return
+    target = args[0]
+    minutes = int(args[1])
+    muted_users[target] = minutes
+    await update.message.reply_text(f"🔇 {target} заглушён на {minutes} минут.")
+
+async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /unmute @username")
+        return
+    target = args[0]
+    if target in muted_users:
+        del muted_users[target]
+        await update.message.reply_text(f"🔊 {target} размучен.")
+    else:
+        await update.message.reply_text(f"❌ {target} не в муте.")
+
+async def kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /kick @username")
+        return
+    target = args[0]
+    await update.message.reply_text(f"👢 {target} кикнут из чата.")
+
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /ban @username")
+        return
+    target = args[0]
+    await update.message.reply_text(f"🚫 {target} забанен навсегда.")
+
+async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /userinfo @username")
+        return
+    target = args[0]
+    warns = warn_count.get(target, 0)
+    muted = target in muted_users
+    await update.message.reply_text(
+        f"👤 *Информация об игроке:*\n\n"
+        f"Ник: {target}\n"
+        f"⚠️ Предупреждений: {warns}\n"
+        f"🔇 Заглушён: {'Да' if muted else 'Нет'}"
+    )
+
+async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /say текст")
+        return
+    text = " ".join(args)
+    await update.message.reply_text(text)
+
+async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM messages WHERE chat_id = ?', (chat_id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🧹 История чата очищена.")
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    history = get_history(chat_id, 10)
+    if not history:
+        await update.message.reply_text("📭 История пуста.")
+        return
+    text = "📜 *Последние 10 сообщений в группе:*\n\n"
+    for username, msg, timestamp in history:
+        text += f"👤 {username}: {msg[:100]}\n"
+    await update.message.reply_text(text)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM messages WHERE chat_id = ?', (chat_id,))
+    total = c.fetchone()[0]
+    c.execute('SELECT COUNT(DISTINCT user_id) FROM messages WHERE chat_id = ?', (chat_id,))
+    users = c.fetchone()[0]
+    conn.close()
+    await update.message.reply_text(f"📊 *Статистика чата:*\n\n📝 Всего сообщений: {total}\n👥 Участников: {users}")
+
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *SwitAI*\n\n"
+        "Швейцарский искусственный интеллект для Telegram.\n"
+        "🇨🇭 Создан президентом Ги Пармеленом.\n\n"
+        "📌 *Команды:*\n"
+        "/history — история чата\n"
+        "/stats — статистика чата\n"
+        "/about — информация о боте\n\n"
+        "💡 *Пасхалки:*\n"
+        "Слава [страна] — 30 стран!\n"
+        "скажи шутку — свежие шутки из интернета"
+    )
 
 # === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
