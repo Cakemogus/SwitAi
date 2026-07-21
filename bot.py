@@ -42,6 +42,28 @@ user_message_buffer = {}
 verdict_buffer = {}
 war_buffer = {}
 
+# === ФУНКЦИЯ РАЗБИВКИ ДЛИННЫХ СООБЩЕНИЙ ===
+def split_text(text, max_len=4000):
+    if len(text) <= max_len:
+        return [text]
+    
+    parts = []
+    lines = text.split('\n')
+    current_part = ""
+    
+    for line in lines:
+        if len(current_part) + len(line) + 1 <= max_len:
+            current_part += line + "\n"
+        else:
+            if current_part:
+                parts.append(current_part.strip())
+            current_part = line + "\n"
+    
+    if current_part:
+        parts.append(current_part.strip())
+    
+    return parts
+
 # === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱",
@@ -274,7 +296,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_text = verdict_buffer[user_id]
         del verdict_buffer[user_id]
         reply = await ask_switai(f"вердикт {full_text}")
-        await update.message.reply_text(reply)
+        for part in split_text(reply):
+            await update.message.reply_text(part)
         return
 
     # === ВОЙНА СБОР ===
@@ -290,7 +313,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_text = war_buffer[user_id]
         del war_buffer[user_id]
         reply = await ask_switai(f"война {full_text}")
-        await update.message.reply_text(reply)
+        for part in split_text(reply):
+            await update.message.reply_text(part)
         return
 
     # === СОХРАНЕНИЕ В БУФЕРА ===
@@ -309,7 +333,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = await ask_switai(text)
         if random.random() < 0.1:
             reply += random.choice(EASTER_EGGS)
-        await update.message.reply_text(reply)
+        for part in split_text(reply):
+            await update.message.reply_text(part)
         return
 
     # === ДЛИННЫЙ ТЕКСТ ===
@@ -324,7 +349,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = await ask_switai(full_text)
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
-    await update.message.reply_text(reply)
+    for part in split_text(reply):
+        await update.message.reply_text(part)
 
 # === ЗАПУСК ===
 def main():
@@ -340,7 +366,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
 
-    print("✅ SwitAI бот с поиском и учётом времени успешно запущен!")
+    print("✅ SwitAI бот с авторазбивкой и поиском успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
