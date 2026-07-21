@@ -1,14 +1,27 @@
 import random
 import re
 import os
+import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
-import httpx
+from flask import Flask
+from threading import Thread
 
 # === КЛЮЧИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# === МИКРО-СЕРВЕР ДЛЯ RENDER ===
+app_web = Flask(__name__)
+
+@app_web.route('/')
+@app_web.route('/health')
+def health_check():
+    return "✅ SwitAI жив и здоров, месье!", 200
+
+def run_web():
+    app_web.run(host='0.0.0.0', port=10000)
 
 # === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
@@ -48,7 +61,7 @@ SWISS_MODE_RESPONSES = [
     "🇨🇭 Ваша лояльность — в швейцарских франках! Горная коза заряжает нейтралитетом!"
 ]
 
-# === УКРАИНСКИЙ РЕЖИМ ===
+# === УКРАИНСКИЙ МЕМНЫЙ РЕЖИМ ===
 UKRAINE_MODE_RESPONSES = [
     "🥓 Сало — це сила! А ще борщ, вареники та горилла!",
     "🇺🇦 Україна — це сало, горилка, вишиванка та козак!",
@@ -82,6 +95,41 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
+    # === КОМАНДА ВЕРДИКТ (НАСТОЯЩИЙ) ===
+    if re.search(r"вердикт", prompt, re.IGNORECASE):
+        text_to_judge = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
+        if not text_to_judge:
+            return "❌ Месье, вы не указали, что именно оценивать. Напишите: *вердикт [текст]*"
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        judge_prompt = (
+            f"Оцени следующее утверждение или идею по шкале от 1 до 10, где 1 — полный провал, а 10 — идеально. "
+            f"Обоснуй оценку в 2-3 предложениях. Не используй шаблонные фразы. Текст для оценки: {text_to_judge}"
+        )
+        
+        data = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.3,
+            "messages": [
+                {"role": "system", "content": "Ты — строгий, но справедливый швейцарский эксперт. Оценивай чётко, без воды."},
+                {"role": "user", "content": judge_prompt}
+            ]
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(GROQ_URL, headers=headers, json=data)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"]
+                return f"📊 *Вердикт SwitAI:*\n\n{result}"
+        except Exception as e:
+            return f"❌ Швейцарский суд временно не работает: {str(e)}"
+
+    # === ПАСХАЛКИ ===
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
     if re.search(r"слава\s*швейцарии", prompt, re.IGNORECASE):
@@ -91,6 +139,7 @@ async def ask_switai(prompt: str) -> str:
     if re.search(r"слава\s*россии", prompt, re.IGNORECASE):
         return random.choice(RUSSIA_MODE_RESPONSES)
 
+    # === ОБЫЧНЫЙ ОТВЕТ ===
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -122,10 +171,6 @@ async def ask_switai(prompt: str) -> str:
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === КОМАНДА /HEALTH ===
-async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ SwitAI жив и здоров, месье!")
-
 # === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -150,11 +195,17 @@ def main():
         print("❌ Не установлены переменные окружения!")
         return
     
+    # Запускаем веб-сервер для Render
+    thread = Thread(target=run_web)
+    thread.daemon = True
+    thread.start()
+    
+    # Запускаем бота
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("health", health_check))
     
-    print("✅ SwitAI бот с Groq успешно запущен!")
+    print("✅ SwitAI бот с веб-сервером и настоящим вердиктом успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
