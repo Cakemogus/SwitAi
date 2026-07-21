@@ -1,5 +1,5 @@
 # triggers.py
-
+import re
 # === ПАСХАЛКИ ПО СТРАНАМ ===
 COUNTRY_TRIGGERS = {
     "слава украине": [
