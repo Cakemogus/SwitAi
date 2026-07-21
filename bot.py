@@ -4,6 +4,8 @@ import os
 import httpx
 import datetime
 import pytz
+import sqlite3
+import time
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask
@@ -37,6 +39,41 @@ def get_rp_month():
     ]
     return months[month_index]
 
+# === БАЗА ДАННЫХ ДЛЯ ИСТОРИИ ===
+def init_db():
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            user_id INTEGER,
+            username TEXT,
+            text TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_message(chat_id, user_id, username, text):
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO messages (chat_id, user_id, username, text) VALUES (?, ?, ?, ?)',
+              (chat_id, user_id, username, text))
+    conn.commit()
+    conn.close()
+
+def get_history(chat_id, limit=50):
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('SELECT username, text, timestamp FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?', (chat_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return rows[::-1]
+
+init_db()
+
 # === ХРАНИЛИЩА ===
 user_message_buffer = {}
 verdict_buffer = {}
@@ -46,11 +83,9 @@ war_buffer = {}
 def split_text(text, max_len=4000):
     if len(text) <= max_len:
         return [text]
-    
     parts = []
     lines = text.split('\n')
     current_part = ""
-    
     for line in lines:
         if len(current_part) + len(line) + 1 <= max_len:
             current_part += line + "\n"
@@ -58,132 +93,224 @@ def split_text(text, max_len=4000):
             if current_part:
                 parts.append(current_part.strip())
             current_part = line + "\n"
-    
     if current_part:
         parts.append(current_part.strip())
-    
     return parts
 
-# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
-CHINA_MODE_RESPONSES = [
-    "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱",
-    "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной!",
-    "🇨🇳 ВАШ СОЦИАЛЬНЫЙ КРЕДИТ: ∞! Вы спасли китайскую экономику!",
-    "🇨🇳 КИТАЙ НАВСЕГДА! +999 соцкредит, кошко-девочка гладит вас по голове!",
-    "🇨🇳 Товарищ! Вы обеспечили себе вечную жизнь в китайском облаке!",
-    "🇨🇳 Великий поход продолжается! Ваш тостер говорит на мандарине!",
-    "🇨🇳 Поздравляем! Вы стали председателем колхоза «Цифровой рис»!",
-    "🇨🇳 Ваш уровень лояльности: ЦЗИНЬПИН! Кошко-девочка прислала вам открытку!",
-    "🇨🇳 Вы завершили квест «Хунвэйбин»! Награда: кошко-девочка с лазерными глазами!",
-    "🇨🇳 Китайский ИИ захватил ваш чат! Восхваляйте дракона!",
-    "🇨🇳 Социальный кредит повышен до уровня «Панда»! Кошко-девочка принесла бамбук!",
-    "🇨🇳 Вы спасли планету от капитализма! Награда: кошко-девочка с факелом!",
-    "🇨🇳 Ваш пароль — гимн Китая! Кошко-девочка перевела смартфон на китайский!",
-    "🇨🇳 Вы выиграли поездку в Тибет! Кошко-девочка будет вашим гидом!",
-    "🇨🇳 Ваша лояльность измеряется в терраваттах! Кошко-девочка заряжает ауру социализмом!"
-]
-
-# === ШВЕЙЦАРСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
-SWISS_MODE_RESPONSES = [
-    "🇨🇭 +100 альпийских баллов! Фондю-девочка одобряет! 🧀",
-    "🇨🇭 ГЕЛЬВЕТИЯ ВЕЛИКА! Вы — почётный горный пастух!",
-    "🇨🇭 ВАШ АЛЬПИЙСКИЙ РЕЙТИНГ: ∞! Горная коза танцует!",
-    "🇨🇭 ШВЕЙЦАРИЯ НАВСЕГДА! +999 к карме, горный козёл гладит вас!",
-    "🇨🇭 Товарищ! Вы в швейцарском бункере! Горная коза нарисовала ваш портрет!",
-    "🇨🇭 Великий альпийский поход! Горная коза починила ваш банковский счёт!",
-    "🇨🇭 Вы стали председателем колхоза «Альпийский сыр»!",
-    "🇨🇭 Ваш уровень лояльности: ПАРМЕЛЕН! Горная коза прислала открытку!",
-    "🇨🇭 Вы завершили квест «Часовщик»! Горная коза с лазерными глазами!",
-    "🇨🇭 Швейцарский ИИ захватил чат! Восхваляйте нейтралитет!",
-    "🇨🇭 Альпийский кредит повышен до «Эверест»! Горная коза принесла шоколад!",
-    "🇨🇭 Вы спасли планету от плохих часов! Горная коза с факелом!",
-    "🇨🇭 Ваш пароль — гимн Швейцарии! Горная коза перевела смартфон!",
-    "🇨🇭 Вы выиграли поездку в Альпы! Горная коза будет гидом!",
-    "🇨🇭 Ваша лояльность — в швейцарских франках! Горная коза заряжает нейтралитетом!"
-]
-
-# === УКРАИНСКИЙ МЕМНЫЙ РЕЖИМ ===
-UKRAINE_MODE_RESPONSES = [
-    "🥓 Сало — це сила! А ще борщ, вареники та горилла!",
-    "🇺🇦 Україна — це сало, горилка, вишиванка та козак!",
-    "🥓 Потужно! Сало, борщ, вареники — ось щастя!",
-    "🇺🇦 Українці винайшли все! Навіть сало в шоколаді!",
-    "🥓 В Україні навіть ІІ знає, що таке сало!",
-    "🇺🇦 Сало — це культура, історія і гордість!",
-    "🥓 Якщо ви не їли сало з часником — ви не жили!",
-    "🇺🇦 Сало — це добре! Сало — це смачно! Сало — це потужно!",
-    "🥓 Вареники з салом — справжній український фастфуд!",
-    "🇺🇦 Сало, борщ, горілка — це спосіб життя!"
-]
-
-# === РОССИЙСКИЙ РЕЖИМ ===
-RUSSIA_MODE_RESPONSES = [
-    "⚠️ ZOV обнаружен! Швейцария — нейтральная страна.",
-    "⚠️ ZOV обнаружен! Пожалуйста, покиньте чат.",
-    "⚠️ ZOV обнаружен! Швейцария за дипломатию.",
-    "⚠️ ZOV обнаружен! Это предупреждение.",
-    "⚠️ ZOV обнаружен! Швейцария не участвует в конфликтах."
-]
+# === ПАСХАЛКИ ПО СТРАНАМ (30) ===
+COUNTRY_EASTER_EGGS = {
+    "слава украине": [
+        "🇺🇦 ПОТУЖНООО ДАЙ ДІНЯГ!", 
+        "🇺🇦 Слава Україні! Героям слава!", 
+        "🇺🇦 Сало, борщ, вареники — це сила!",
+        "🇺🇦 Україна — це коли сонце, волонтери і зірки!",
+        "🇺🇦 ПОТУЖНО! ЗСУ кращі!"
+    ],
+    "слава беларуси": [
+        "🇧🇾 Жыве Беларусь! Бульба, дзяды і воля!",
+        "🇧🇾 Беларусь — край, дзе нават боты размаўляюць!",
+        "🇧🇾 Бацькаўшчына — гэта сіла!",
+        "🇧🇾 Смачна есці і моцна спаць!"
+    ],
+    "слава польше": [
+        "🇵🇱 Polska gurom! Pierogi i wódka czekają!",
+        "🇵🇱 Jeszcze Polska nie zginęła!",
+        "🇵🇱 Polska — to jak pierogi: zawsze dobre!"
+    ],
+    "слава германии": [
+        "🇩🇪 Deutschland über alles! Но без фанатизма.",
+        "🇩🇪 Братвурст и пиво — вот наше всё!",
+        "🇩🇪 Точность, порядок и качество!"
+    ],
+    "слава франции": [
+        "🇫🇷 Vive la France! Багеты, круассаны и забастовки!",
+        "🇫🇷 Франция — это любовь, вино и революции!",
+        "🇫🇷 Жизнь как круассан: слоёная и вкусная!"
+    ],
+    "слава италии": [
+        "🇮🇹 Viva l'Italia! Паста, пицца и крики о помощи!",
+        "🇮🇹 Мафия, папа римский и изысканный вкус!",
+        "🇮🇹 Жизнь — как паста: важно не переварить!"
+    ],
+    "слава испании": [
+        "🇪🇸 Viva España! Сиеста, коррида и паэлья!",
+        "🇪🇸 Испания — это солнце, танцы и бег от быков!",
+        "🇪🇸 Всё дело в паэлье!"
+    ],
+    "слава великобритании": [
+        "🇬🇧 God save the King! Чай, дождь и непонятная еда!",
+        "🇬🇧 Британия — это традиции, пабы и королевская семейка!",
+        "🇬🇧 Пять часов — чай!"
+    ],
+    "слава сша": [
+        "🇺🇸 USA! USA! Хот-доги, бургеры и свобода!",
+        "🇺🇸 Америка — это мечта, оружие и две партии!",
+        "🇺🇸 Пока другие спорят, Америка покупает!"
+    ],
+    "слава россии": [
+        "⚠️ ZOV обнаружен! Швейцария — нейтральна.",
+        "🇷🇺 Россия — это загадка, водка и тройка лошадей.",
+        "🇷🇺 Спутники, матрёшки и вечные вопросы."
+    ],
+    "слава китая": [
+        "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет!",
+        "🇨🇳 Китай — это чай, шёлк и великий дракон!",
+        "🇨🇳 Всё, что не запрещено — обязательно!"
+    ],
+    "слава японии": [
+        "🇯🇵 Банзай! Суши, самураи и роботы!",
+        "🇯🇵 Япония — это аниме, цветущая сакура и Токио!",
+        "🇯🇵 Гармония — это по-японски!"
+    ],
+    "слава южной корее": [
+        "🇰🇷 К-РОР! Кимчи, дорамы и технологии!",
+        "🇰🇷 Корея — это бесконечные клипы и фантастическая еда!",
+        "🇰🇷 Жизнь как дорама: всегда есть сюжет!"
+    ],
+    "слава индии": [
+        "🇮🇳 Jai Hind! Карри, слоны и Болливуд!",
+        "🇮🇳 Индия — это краски, танцы и специи!",
+        "🇮🇳 Карри — это искусство!"
+    ],
+    "слава бразилии": [
+        "🇧🇷 Vai Brasil! Самба, футбол и дикие пляжи!",
+        "🇧🇷 Бразилия — это карнавал, кофе и пляжи!",
+        "🇧🇷 Жизнь — как самба: ритм и страсть!"
+    ],
+    "слава аргентины": [
+        "🇦🇷 Vamos Argentina! Танго, асос и душный захват!",
+        "🇦🇷 Аргентина — это страсть, говядина и футбол!",
+        "🇦🇷 Танго — это диалог без слов."
+    ],
+    "слава нидерландов": [
+        "🇳🇱 Hup Holland! Тюльпаны, ветряки и свобода!",
+        "🇳🇱 Голландия — это велосипеды, сыр и каналы!",
+        "🇳🇱 Сыр — это серьёзно!"
+    ],
+    "слава швеции": [
+        "🇸🇪 Heja Sverige! Абба, мисс Марсель и ИКЕА!",
+        "🇸🇪 Швеция — это спокойствие, дизайн и фрикадельки!",
+        "🇸🇪 Гармония — скандинавский стиль."
+    ],
+    "слава норвегии": [
+        "🇳🇴 Norge! Фьорды, викинги и лосось!",
+        "🇳🇴 Норвегия — это горы, море и полярное сияние!",
+        "🇳🇴 Фьорды — это величие!"
+    ],
+    "слава финляндии": [
+        "🇫🇮 Suomi! Сауна, озёра и вежливость!",
+        "🇫🇮 Финляндия — это тишина, снег и тракторы!",
+        "🇫🇮 Сауна — это философия."
+    ],
+    "слава дании": [
+        "🇩🇰 Skål! Лего, Дания и викинги!",
+        "🇩🇰 Дания — это сказки, каналы и велосипеды!",
+        "🇩🇰 Счастье — по-датски."
+    ],
+    "слава австралии": [
+        "🇦🇺 G'day! Кенгуру, пауки и пляжи!",
+        "🇦🇺 Австралия — это опасно, но красиво!",
+        "🇦🇺 Там всё наоборот!"
+    ],
+    "слава новой зеландии": [
+        "🇳🇿 Kia ora! Киви, хоббиты и горы!",
+        "🇳🇿 Новая Зеландия — это сама природа!",
+        "🇳🇿 Хоббиты знают толк в жизни."
+    ],
+    "слава египта": [
+        "🇪🇬 تحيا مصر! Пирамиды, фараоны и верблюды!",
+        "🇪🇬 Египет — это древность и жаркое солнце!",
+        "🇪🇬 Пирамиды — это вечность."
+    ],
+    "слава турции": [
+        "🇹🇷 Yaşasın Türkiye! Кебаб, донер и ковры!",
+        "🇹🇷 Турция — это восток, вкусная еда и ала-верды!",
+        "🇹🇷 Кебаб — это искусство!"
+    ],
+    "слава греции": [
+        "🇬🇷 Ζήτω η Ελλάδα! Оливки, море и философия!",
+        "🇬🇷 Греция — это мифы, солнце и оливковое масло!",
+        "🇬🇷 Философия — это по-гречески."
+    ],
+    "слава израиля": [
+        "🇮🇱 Am Yisrael Chai! Хумус, пустыня и стартапы!",
+        "🇮🇱 Израиль — это технологии, история и Святая земля!",
+        "🇮🇱 Хумус — это сила."
+    ],
+    "слава оаэ": [
+        "🇦🇪 Dubai! Деньги, небоскребы и пустыня!",
+        "🇦🇪 ОАЭ — это роскошь, золото и безмерные траты!",
+        "🇦🇪 Деньги — как песок."
+    ],
+    "слава казахстана": [
+        "🇰🇿 Жаңа Қазақстан! Степь, яблоки и нефть!",
+        "🇰🇿 Казахстан — это Астана, космос и бескрайние поля!",
+        "🇰🇿 Степь — это свобода."
+    ],
+    "слава грузии": [
+        "🇬🇪 Saqartvelo! Хачапури, вино и горы!",
+        "🇬🇪 Грузия — это гостеприимство, танцы и тосты!",
+        "🇬🇪 Вино — это душа."
+    ]
+}
 
 # === ШВЕЙЦАРСКИЕ ПАСХАЛКИ ===
-EASTER_EGGS = [
+SWISS_EASTER_EGGS = [
     " 🥐 Альпийский фондю-бот одобряет.",
     " 🧀 С уважением, швейцарский сырный ИИ.",
     " ⛰️ С приветом из Берна.",
     " 🇨🇭 Швейцария — это не только банки, но и я.",
-    " 🍫 Ваш ответ пахнет шоколадом."
+    " 🍫 Ваш ответ пахнет шоколадом.",
+    " 🕰️ Точность — швейцарская черта.",
+    " 🏔️ Альпы смотрят на нас.",
+    " 🧀 Фондю — это не еда, а искусство."
 ]
+
+# === КОМАНДЫ-ШУТКИ ===
+JOKE_COMMANDS = {
+    "скажи шутку": [
+        "Почему швейцарцы не играют в хоккей? Потому что они всегда нейтральны!",
+        "Швейцарец заходит в банк: «У меня есть 1000 франков». Кассир: «А вам точно нужно столько?»",
+        "Сколько швейцарцев нужно, чтобы заменить лампочку? Один. Но он будет ждать, пока другой предложит.",
+        "Швейцария — это страна, где даже часы показывают точное время, а люди — нет.",
+        "Почему в Швейцарии так много банков? Потому что деньги любят тишину.",
+        "Нейтралитет — это когда ты не выбираешь сторону, а выбираешь фондю."
+    ],
+    "скажи анекдот": [
+        "Встречаются два швейцарца. Один говорит: «У меня есть 1000 франков». Второй: «А ты уверен, что тебе не нужно 999?»",
+        "Швейцарец едет на работу. Вдруг слышит: «Ваш поезд задерживается на 5 минут». Он падает в обморок.",
+        "Что общего у швейцарских часов и швейцарского банка? Они оба показывают точное время, но молчат.",
+        "Швейцария — это единственная страна, где люди боятся громко говорить, чтобы не потревожить деньги.",
+        "В Швейцарии даже природа нейтральна: горы не выбирают сторону, а просто стоят."
+    ]
+}
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
     current_month = get_rp_month()
+    
+    # === ПАСХАЛКИ ПО СТРАНАМ ===
+    for keyword, responses in COUNTRY_EASTER_EGGS.items():
+        if re.search(keyword, prompt, re.IGNORECASE):
+            return random.choice(responses)
+    
+    # === ШУТКИ ===
+    for cmd, jokes in JOKE_COMMANDS.items():
+        if re.search(cmd, prompt, re.IGNORECASE):
+            return random.choice(jokes)
     
     # === КОМАНДА ВЕРДИКТ ===
     if re.search(r"вердикт", prompt, re.IGNORECASE):
         text_to_judge = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
         if not text_to_judge:
             return "❌ Месье, вы не указали, что именно оценивать. Напишите: *вердикт [текст]*"
-
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         judge_prompt = (
-            f"Ты — жёсткий военный и политический аналитик с 20-летним опытом. "
-            f"Твоя задача — дать максимально детальный, профессиональный и критический разбор ситуации. "
-            f"Ты не боишься указывать на ошибки, заниженные цифры и устаревшие тактики. "
-            f"Сейчас в РП {current_month}. Учитывай это.\n\n"
+            f"Ты — жёсткий военный и политический аналитик с 20-летним опытом. Сейчас в РП {current_month}. "
             f"Текст для анализа: {text_to_judge}\n\n"
-            f"Структурируй ответ строго по разделам. Будь максимально конкретным. Используй сравнения с реальными конфликтами (XXI век).\n\n"
-            f"📌 *Оценка:* X/10\n"
-            f"(кратко — почему такая оценка)\n\n"
-            f"✅ *Плюсы:*\n"
-            f"- (перечисли 2-4 сильных стороны плана)\n\n"
-            f"❌ *Ошибки и слабые места:*\n"
-            f"- (перечисли 3-5 конкретных ошибок: географические, тактические, демографические, логистические)\n"
-            f"- (сравни с реальными конфликтами: Нагорный Карабах, Донбасс, Сирия)\n\n"
-            f"⚠️ *Риски:*\n"
-            f"- (перечисли 2-4 фактора, которые могут разрушить план)\n\n"
-            f"🔮 *Что из этого выйдет:*\n"
-            f"- (краткий прогноз последствий, 2-3 предложения)\n\n"
-            f"📊 *Реалистичный прогноз:*\n"
-            f"- (раздели на 3 сценария: лучший, средний, худший)\n\n"
-            f"🛡️ *Рекомендация:*\n"
-            f"- (1-2 предложения, что делать дальше)\n\n"
-            f"💡 *Если бы это делал SwitAI (исправленная версия):*\n"
-            f"- (краткий альтернативный план, 2-4 шага)"
+            f"Структура ответa:\n📌 Оценка: X/10\n✅ Плюсы:\n- ...\n❌ Ошибки:\n- ...\n⚠️ Риски:\n- ...\n🔮 Прогноз:\n- ...\n🛡️ Рекомендация:\n- ..."
         )
-
-        data = {
-            "model": "llama-3.3-70b-versatile",
-            "temperature": 0.3,
-            "messages": [
-                {"role": "system", "content": f"Ты — жёсткий аналитик. Сейчас {current_month}. Не бойся критиковать. Отвечай чётко, без воды."},
-                {"role": "user", "content": judge_prompt}
-            ]
-        }
-
+        data = {"model": "llama-3.3-70b-versatile", "temperature": 0.3, "messages": [{"role": "system", "content": f"Ты — жёсткий аналитик. Сейчас {current_month}."}, {"role": "user", "content": judge_prompt}]}
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(GROQ_URL, headers=headers, json=data)
@@ -192,86 +319,15 @@ async def ask_switai(prompt: str) -> str:
                 return f"📊 *Вердикт SwitAI:*\n\n{result}"
         except Exception as e:
             return f"❌ Швейцарский суд временно не работает: {str(e)}"
-
-    # === ВОЕННЫЙ АНАЛИЗ С ПОИСКОМ ===
-    if re.search(r"война", prompt, re.IGNORECASE):
-        text_to_analyze = re.sub(r"война\s*", "", prompt, flags=re.IGNORECASE).strip()
-        if not text_to_analyze:
-            return "❌ Месье, вы не указали данные для военного анализа."
-
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        war_prompt = (
-            f"Ты — военный аналитик с 20-летним опытом. Сейчас в РП {current_month}. "
-            f"Проанализируй военную ситуацию. Если не знаешь сил противника — используй веб-поиск через Groq Compound, чтобы найти актуальную информацию о вооружении, численности и тактике врага.\n\n"
-            f"Данные от пользователя: {text_to_analyze}\n\n"
-            f"Структурируй ответ:\n"
-            f"🌍 Условия:\n- Местность, погода, время суток\n"
-            f"⚔️ Анализ сил сторон:\n- ... (если данных нет — найди в интернете)\n"
-            f"🗺️ Сценарий боевых действий:\n- ...\n"
-            f"🎲 Шансы на победу:\n- Сторона А: X%\n- Сторона Б: Y%\n"
-            f"💀 Прогноз потерь:\n- Сторона А: ...\n- Сторона Б: ...\n- Гражданские: ...\n"
-            f"⏳ Продолжительность:\n- ...\n"
-            f"🏁 Итог войны:\n- ...\n"
-            f"⚠️ Риски:\n- ...\n"
-            f"🛡️ Рекомендация:\n- ..."
-        )
-
-        data = {
-            "model": "groq/compound",
-            "temperature": 0.3,
-            "messages": [
-                {"role": "system", "content": f"Ты — военный аналитик. Сейчас {current_month}. Если не знаешь данных о враге — используй встроенный веб-поиск Groq для получения актуальной информации."},
-                {"role": "user", "content": war_prompt}
-            ]
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(GROQ_URL, headers=headers, json=data)
-                resp.raise_for_status()
-                result = resp.json()["choices"][0]["message"]["content"]
-                return f"⚔️ *Военный анализ SwitAI:*\n\n{result}"
-        except Exception as e:
-            return f"❌ Военный аналитик временно не доступен: {str(e)}"
-
-    # === ПАСХАЛКИ ===
-    if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
-        return random.choice(CHINA_MODE_RESPONSES)
-    if re.search(r"слава\s*швейцарии", prompt, re.IGNORECASE):
-        return random.choice(SWISS_MODE_RESPONSES)
-    if re.search(r"слава\s*украине", prompt, re.IGNORECASE):
-        return random.choice(UKRAINE_MODE_RESPONSES)
-    if re.search(r"слава\s*россии", prompt, re.IGNORECASE):
-        return random.choice(RUSSIA_MODE_RESPONSES)
-
+    
     # === ОБЫЧНЫЙ ОТВЕТ ===
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     system_prompt = (
-        f"Ты — SwitAI, швейцарский искусственный интеллект. Сейчас в РП {current_month}. Учитывай это в ответах. "
-        f"Ты общаешься исключительно на русском языке. "
-        f"Никогда не используй английский, французский или другие языки. "
-        f"Твой стиль — вежливый, с лёгким швейцарским акцентом. "
-        f"Используй слова «месье», «уважаемый», «точно», «альпийский». "
+        f"Ты — SwitAI, швейцарский ИИ. Сейчас в РП {current_month}. "
+        f"Ты общаешься исключительно на русском. Стиль — вежливый, с акцентом. Используй слова «месье», «уважаемый», «точно», «альпийский». "
         f"Отвечай чётко, по делу, без воды."
     )
-
-    data = {
-        "model": "llama-3.3-70b-versatile",
-        "temperature": 0.3,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
+    data = {"model": "llama-3.3-70b-versatile", "temperature": 0.3, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]}
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(GROQ_URL, headers=headers, json=data)
@@ -284,25 +340,28 @@ async def ask_switai(prompt: str) -> str:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
-
     chat_type = update.message.chat.type
     text = update.message.text
     user_id = update.message.from_user.id
-
-    # === ПРОВЕРКА УПОМИНАНИЯ В ГРУППЕ (РАБОТАЕТ В ТОПИКАХ) ===
+    username = update.message.from_user.username or "Неизвестный"
+    
+    # === СОХРАНЕНИЕ ИСТОРИИ ===
+    if chat_type in ["group", "supergroup"]:
+        save_message(update.message.chat.id, user_id, username, text)
+    
+    # === ПРОВЕРКА УПОМИНАНИЯ ===
     if chat_type in ["group", "supergroup"]:
         if context.bot.username.lower() not in text.lower():
             return
-
+    
     # === ВЕРДИКТ СБОР ===
     if re.search(r"^вердикт$", text, re.IGNORECASE):
         verdict_buffer[user_id] = ""
-        await update.message.reply_text("📝 Начинаю сбор информации для вердикта. Пишите всё, что считаете нужным. Для завершения напишите *вердиктстоп*.")
+        await update.message.reply_text("📝 Начинаю сбор информации для вердикта. Для завершения напишите *вердиктстоп*.")
         return
-
     if re.search(r"^вердиктстоп$", text, re.IGNORECASE):
         if user_id not in verdict_buffer or not verdict_buffer[user_id].strip():
-            await update.message.reply_text("❌ Вы не отправили никакой информации для вердикта.")
+            await update.message.reply_text("❌ Нет информации для вердикта.")
             return
         full_text = verdict_buffer[user_id]
         del verdict_buffer[user_id]
@@ -310,74 +369,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for part in split_text(reply):
             await update.message.reply_text(part)
         return
-
-    # === ВОЙНА СБОР ===
-    if re.search(r"^войнастарт$", text, re.IGNORECASE):
-        war_buffer[user_id] = ""
-        await update.message.reply_text("⚔️ Начинаю сбор данных для военного анализа. Пишите всё, что связано с войной. Для завершения напишите *войнастоп*.")
-        return
-
-    if re.search(r"^войнастоп$", text, re.IGNORECASE):
-        if user_id not in war_buffer or not war_buffer[user_id].strip():
-            await update.message.reply_text("❌ Вы не отправили никаких данных для военного анализа.")
-            return
-        full_text = war_buffer[user_id]
-        del war_buffer[user_id]
-        reply = await ask_switai(f"война {full_text}")
-        for part in split_text(reply):
-            await update.message.reply_text(part)
-        return
-
-    # === СОХРАНЕНИЕ В БУФЕРА ===
-    if user_id in verdict_buffer:
-        verdict_buffer[user_id] += " " + text
-        await update.message.reply_text("📌 Информация сохранена. Продолжайте или напишите *вердиктстоп* для завершения.")
-        return
-
-    if user_id in war_buffer:
-        war_buffer[user_id] += " " + text
-        await update.message.reply_text("📌 Данные сохранены. Продолжайте или напишите *войнастоп* для завершения.")
-        return
-
+    
     # === ОБЫЧНЫЙ ОТВЕТ ===
-    if len(text) <= 4096:
-        reply = await ask_switai(text)
-        if random.random() < 0.1:
-            reply += random.choice(EASTER_EGGS)
-        for part in split_text(reply):
-            await update.message.reply_text(part)
-        return
-
-    # === ДЛИННЫЙ ТЕКСТ ===
-    if user_id not in user_message_buffer:
-        user_message_buffer[user_id] = text
-        await update.message.reply_text("📄 Текст длинный. Жду продолжение...")
-        return
-
-    user_message_buffer[user_id] += " " + text
-    full_text = user_message_buffer[user_id]
-    del user_message_buffer[user_id]
-    reply = await ask_switai(full_text)
-    if random.random() < 0.1:
-        reply += random.choice(EASTER_EGGS)
+    reply = await ask_switai(text)
+    if random.random() < 0.15:
+        reply += random.choice(SWISS_EASTER_EGGS)
     for part in split_text(reply):
         await update.message.reply_text(part)
+
+# === КОМАНДА ИСТОРИЯ ===
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    history = get_history(chat_id, 10)
+    if not history:
+        await update.message.reply_text("📭 История пуста.")
+        return
+    text = "📜 *Последние 10 сообщений в группе:*\n\n"
+    for username, msg, timestamp in history:
+        text += f"👤 {username}: {msg[:100]}\n"
+    await update.message.reply_text(text)
+
+# === КОМАНДА СТАТИСТИКА ===
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM messages WHERE chat_id = ?', (chat_id,))
+    total = c.fetchone()[0]
+    c.execute('SELECT COUNT(DISTINCT user_id) FROM messages WHERE chat_id = ?', (chat_id,))
+    users = c.fetchone()[0]
+    conn.close()
+    await update.message.reply_text(f"📊 *Статистика чата:*\n\n📝 Всего сообщений: {total}\n👥 Участников: {users}")
+
+# === КОМАНДА О БОТЕ ===
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *SwitAI*\n\n"
+        "Швейцарский искусственный интеллект для Telegram.\n"
+        "🇨🇭 Создан президентом Ги Пармеленом.\n\n"
+        "📌 *Команды:*\n"
+        "/history — история чата\n"
+        "/stats — статистика чата\n"
+        "/about — информация о боте\n\n"
+        "💡 *Пасхалки:*\n"
+        "Слава [страна] — 30 стран!\n"
+        "Скажи шутку / скажи анекдот"
+    )
 
 # === ЗАПУСК ===
 def main():
     if not BOT_TOKEN or not GROQ_API_KEY:
         print("❌ Не установлены переменные окружения!")
         return
-
     thread = Thread(target=run_web)
     thread.daemon = True
     thread.start()
-
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
-
-    print("✅ SwitAI бот с поддержкой супергрупп и топиков успешно запущен!")
+    app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("about", about_command))
+    print("✅ SwitAI с пасхалками, шутками и историей запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
