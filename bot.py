@@ -5,13 +5,12 @@ import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 
-# === КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===
+# === КЛЮЧИ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-BOT_USERNAME = "SwitAI_Swiss_Bot"  # <--- Имя бота без @
 
-# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ (15 ВАРИАНТОВ) ===
+# === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱 Вы получаете миску риса и доступ к 5G на 100 лет!",
     "🇨🇳 СИ ЗА УЧИТЕЛЕМ! Вы — почётный гражданин Поднебесной. Кошко-девочка шлёт привет из Гуанчжоу, а рис уже в пути!",
@@ -84,7 +83,7 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
-    # Проверка на пасхалки
+    # Проверка на пасхалки (работают только при прямом взаимодействии)
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(CHINA_MODE_RESPONSES)
     
@@ -104,7 +103,7 @@ async def ask_switai(prompt: str) -> str:
     
     system_prompt = (
         "Ты — SwitAI, швейцарский искусственный интеллект. "
-        "Ты общаешься строго на русском языке, nawet если пользователь пишет на другом языке. "
+        "Ты общаешься строго на русском языке, даже если пользователь пишет на другом языке. "
         "Твой стиль — вежливый, с лёгким швейцарским акцентом, используй слова «месье», «уважаемый», «точно», «альпийский». "
         "Добавляй лёгкий юмор, но не перебарщивай. "
         "Ты не отвечаешь на китайском, даже если тебя просят. "
@@ -131,18 +130,17 @@ async def ask_switai(prompt: str) -> str:
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ SwitAI жив и здоров, месье!")
 
-# === ОБРАБОТЧИК СООБЩЕНИЙ (С ПРОВЕРКОЙ НА ГРУППУ) ===
+# === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
     chat_type = update.message.chat.type
     
-    # === Если это группа или супергруппа ===
+    # В группах отвечаем только при упоминании
     if chat_type in ["group", "supergroup"]:
-        # Проверяем, упомянут ли бот
         if not context.bot.username in update.message.text:
-            return  # Игнорируем, если бот не упомянут
+            return
 
     user_text = update.message.text
     reply = await ask_switai(user_text)
