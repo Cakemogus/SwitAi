@@ -249,7 +249,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === ВСПОМОГАТЕЛЬНЫЕ КОМАНДЫ ===
+# === КОМАНДЫ ===
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username
@@ -561,7 +561,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — статистика чата\n"
         "/about — информация о боте\n\n"
         "💡 *Пасхалки:*\n"
-        "Слава [страна] — 30 стран!\n"
+        "Слава [страна] — 100 стран!\n"
         "скажи шутку — свежие шутки из интернета"
     )
 
@@ -618,7 +618,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(part)
             return
     
-    # === ВЕРДИКТ ===
+    # === ВЕРДИКТ (СТАРОЕ ОФОРМЛЕНИЕ) ===
     if re.search(r"^верд(икт)?$", text, re.IGNORECASE):
         if update.message.reply_to_message and update.message.reply_to_message.text:
             text_to_judge = update.message.reply_to_message.text
@@ -633,7 +633,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text("❌ Месье, нет текста для анализа.")
                 return
-        reply = await ask_switai(chat_id, user_id, f"вердикт {text_to_judge}")
+        
+        verdict_prompt = (
+            f"Ты — жёсткий швейцарский аналитик. Проанализируй следующий текст. "
+            f"Если это экономика — укажи конкретные риски (отказ партнёров, санкции, конкуренты). "
+            f"Если это война — дай сценарий, потери и итог. "
+            f"Если это идея — укажи слабые места и альтернативу.\n\n"
+            f"Текст для анализа: {text_to_judge}\n\n"
+            f"Структурируй ответ строго по разделам:\n"
+            f"📌 Оценка: X/10\n"
+            f"✅ Плюсы:\n- ...\n"
+            f"❌ Минусы:\n- ...\n"
+            f"⚠️ Риски:\n- ...\n"
+            f"🔮 Что из этого выйдет:\n- ...\n"
+            f"🏆 Как сделать правильно:\n1. ...\n2. ...\n"
+            f"🛡️ Рекомендация:\n- ..."
+        )
+        
+        reply = await ask_switai(chat_id, user_id, verdict_prompt)
         for part in split_text(reply):
             await update.message.reply_text(part)
         return
@@ -680,7 +697,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия с акцентом запущена!")
+    print("✅ SwitAI финальная версия с акцентом и старым вердиктом запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
