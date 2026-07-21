@@ -95,7 +95,7 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
-    # === КОМАНДА ВЕРДИКТ (НАСТОЯЩИЙ) ===
+    # === КОМАНДА ВЕРДИКТ (УСИЛЕННЫЙ С ПРОГНОЗОМ) ===
     if re.search(r"вердикт", prompt, re.IGNORECASE):
         text_to_judge = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
         if not text_to_judge:
@@ -105,21 +105,29 @@ async def ask_switai(prompt: str) -> str:
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        
+
         judge_prompt = (
-            f"Оцени следующее утверждение или идею по шкале от 1 до 10, где 1 — полный провал, а 10 — идеально. "
-            f"Обоснуй оценку в 2-3 предложениях. Не используй шаблонные фразы. Текст для оценки: {text_to_judge}"
+            f"Оцени следующее утверждение или идею по шкале от 1 до 10. "
+            f"Структурируй ответ строго по разделам:\n\n"
+            f"📌 Оценка: X/10\n\n"
+            f"✅ Плюсы:\n- (перечисли 2-4 пункта)\n\n"
+            f"❌ Минусы:\n- (перечисли 2-4 пункта)\n\n"
+            f"⚠️ Риски:\n- (перечисли 2-4 пункта)\n\n"
+            f"🔮 Что из этого выйдет:\n- (краткий прогноз последствий, 2-3 предложения)\n\n"
+            f"🛡️ Рекомендация:\n- (краткая рекомендация, 1-2 предложения)\n\n"
+            f"Текст для оценки: {text_to_judge}\n\n"
+            f"Если текст связан со Швейцарией, в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
         )
-        
+
         data = {
             "model": "llama-3.3-70b-versatile",
             "temperature": 0.3,
             "messages": [
-                {"role": "system", "content": "Ты — строгий, но справедливый швейцарский эксперт. Оценивай чётко, без воды."},
+                {"role": "system", "content": "Ты — строгий, но справедливый швейцарский эксперт. Оценивай чётко, без воды. Отвечай строго по структуре."},
                 {"role": "user", "content": judge_prompt}
             ]
         }
-        
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(GROQ_URL, headers=headers, json=data)
@@ -144,7 +152,7 @@ async def ask_switai(prompt: str) -> str:
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     system_prompt = (
         "Ты — SwitAI, швейцарский искусственный интеллект. "
         "Ты общаешься исключительно на русском языке. "
@@ -153,7 +161,7 @@ async def ask_switai(prompt: str) -> str:
         "Используй слова «месье», «уважаемый», «точно», «альпийский». "
         "Отвечай чётко, по делу, без воды."
     )
-    
+
     data = {
         "model": "llama-3.3-70b-versatile",
         "temperature": 0.3,
@@ -162,7 +170,7 @@ async def ask_switai(prompt: str) -> str:
             {"role": "user", "content": prompt}
         ]
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(GROQ_URL, headers=headers, json=data)
@@ -175,18 +183,18 @@ async def ask_switai(prompt: str) -> str:
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
-    
+
     chat_type = update.message.chat.type
     if chat_type in ["group", "supergroup"]:
         if not context.bot.username in update.message.text:
             return
-    
+
     user_text = update.message.text
     reply = await ask_switai(user_text)
-    
+
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
-    
+
     await update.message.reply_text(reply)
 
 # === ЗАПУСК ===
@@ -194,18 +202,18 @@ def main():
     if not BOT_TOKEN or not GROQ_API_KEY:
         print("❌ Не установлены переменные окружения!")
         return
-    
+
     # Запускаем веб-сервер для Render
     thread = Thread(target=run_web)
     thread.daemon = True
     thread.start()
-    
+
     # Запускаем бота
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
-    
-    print("✅ SwitAI бот с веб-сервером и настоящим вердиктом успешно запущен!")
+
+    print("✅ SwitAI бот с веб-сервером успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
