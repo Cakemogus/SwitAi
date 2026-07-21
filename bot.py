@@ -20,6 +20,9 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 ADMIN_ID = 7184396483
 ADMIN_USERNAME = "cakemogus"
 
+# === ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ОСТАНОВКИ ===
+bot_stopped = False
+
 # === МИКРО-СЕРВЕР ДЛЯ RENDER ===
 app_web = Flask(__name__)
 
@@ -106,6 +109,13 @@ def get_dialog_history(chat_id, user_id, limit=50):
     conn.close()
     return rows[::-1]
 
+def clear_dialog_history(chat_id, user_id):
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM dialog_history WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
+    conn.commit()
+    conn.close()
+
 init_db()
 
 # === ХРАНИЛИЩА ===
@@ -145,6 +155,12 @@ def is_admin(user_id: int, username: str) -> bool:
     if username and username.lower() == ADMIN_USERNAME.lower():
         return True
     return False
+
+# === ФИЛЬТР МАТА ===
+MAT_KEYWORDS = ["залупа", "хуй", "пизда", "нетидинахуй", "пендос", "лох", "член", "жопа", "соси", "пенис", "вагина", "анальный"]
+
+def contains_mate(text: str) -> bool:
+    return any(word in text.lower() for word in MAT_KEYWORDS)
 
 # === ФИЛЬТР ===
 FORBIDDEN_KEYWORDS = [
@@ -233,6 +249,10 @@ async def get_joke_from_internet(topic: str = "") -> str:
 async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = False) -> str:
     current_month = get_rp_month()
     
+    # === ФИЛЬТР МАТА ===
+    if contains_mate(prompt):
+        return "Месье, я предпочитаю не обсуждать такие темы. Давайте поговорим о чём-то более альпийском. ⛰️"
+    
     if not no_filter and filter_enabled:
         if is_dangerous_request(prompt) or detect_prompt_injection(prompt):
             return "🔐 Швейцарский банк не взламывается, месье."
@@ -252,7 +272,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     save_dialog(chat_id, user_id, "user", prompt)
     history = get_dialog_history(chat_id, user_id, limit=50)
     
-    messages = [{"role": "system", "content": f"Ты — SwitAI, швейцарский эксперт. Сейчас в РП {current_month}. Ты помнишь всю историю диалога. Отвечай с учётом предыдущих сообщений."}]
+    messages = [{"role": "system", "content": f"Ты — SwitAI, швейцарский эксперт. Сейчас в РП {current_month}. Ты помнишь всю историю диалога. Отвечай с учётом предыдущих сообщений. Не используй мат и не объясняй матерные слова."}]
     for role, content in history:
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": prompt})
@@ -276,6 +296,26 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
 # === АДМИН-КОМАНДЫ ===
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_stopped
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    bot_stopped = True
+    await update.message.reply_text("🛑 Бот остановлен. Все команды, кроме /start, игнорируются.")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_stopped
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    bot_stopped = False
+    await update.message.reply_text("✅ Бот возобновил работу.")
+
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username
@@ -302,6 +342,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/userinfo @user — информация\n"
         "/say текст — написать от имени бота\n"
         "/clear_chat — очистить историю чата\n"
+        "/stop — остановить бота\n"
+        "/start — возобновить работу бота\n"
         "/exit_admin — выйти"
     )
 
@@ -327,7 +369,8 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 ID: {user_id}\n"
         f"💬 Чат ID: {chat_id}\n"
         f"🔒 Фильтр: {'Вкл' if filter_enabled else 'Выкл'}\n"
-        f"📋 Режим: {bot_mode}"
+        f"📋 Режим: {bot_mode}\n"
+        f"🛑 Бот остановлен: {'Да' if bot_stopped else 'Нет'}"
     )
 
 async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -340,6 +383,7 @@ async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYP
     key = f"{chat_id}_{user_id}"
     if key in dialog_memory:
         del dialog_memory[key]
+    clear_dialog_history(chat_id, user_id)
     await update.message.reply_text("🧹 Моя память очищена.")
 
 async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -349,6 +393,11 @@ async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     dialog_memory.clear()
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM dialog_history')
+    conn.commit()
+    conn.close()
     await update.message.reply_text("🧹 Вся память очищена.")
 
 async def set_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,6 +446,11 @@ async def reset_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dialog_memory.clear()
     verdict_buffer.clear()
     war_buffer.clear()
+    conn = sqlite3.connect('history.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM dialog_history')
+    conn.commit()
+    conn.close()
     await update.message.reply_text("🔄 Бот сброшен (память и буферы очищены).")
 
 async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -560,6 +614,8 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_stopped
+    
     if not update.message or not update.message.text:
         return
     
@@ -568,6 +624,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "Неизвестный"
+    
+    # === ПРОВЕРКА НА ОСТАНОВКУ ===
+    if bot_stopped:
+        if text.lower() == "/start":
+            # пропускаем, чтобы обработать команду
+            pass
+        else:
+            return
     
     # === АДМИН-РЕЖИМ ===
     if chat_id in admin_mode and admin_mode[chat_id]:
@@ -602,7 +666,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(part)
             return
     
-    # === ВЕРДИКТ ===
+    # === ВЕРДИКТ (без лишних вопросов) ===
     if re.search(r"^верд(икт)?$", text, re.IGNORECASE):
         if update.message.reply_to_message and update.message.reply_to_message.text:
             text_to_judge = update.message.reply_to_message.text
@@ -617,26 +681,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text("❌ Месье, нет текста для анализа.")
                 return
-        verdict_request[user_id] = {"chat_id": chat_id, "text": text_to_judge}
-        await update.message.reply_text("📝 Вы хотите получить вердикт? Напишите *да* или *нет*.")
+        reply = await ask_switai(chat_id, user_id, f"вердикт {text_to_judge}")
+        for part in split_text(reply):
+            await update.message.reply_text(part)
         return
-    
-    # === ПОДТВЕРЖДЕНИЕ ===
-    if user_id in verdict_request:
-        if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
-            data = verdict_request[user_id]
-            del verdict_request[user_id]
-            reply = await ask_switai(chat_id, user_id, f"вердикт {data['text']}")
-            for part in split_text(reply):
-                await update.message.reply_text(part)
-            return
-        elif re.search(r"^(нет|no|не|отмена|не надо)$", text, re.IGNORECASE):
-            del verdict_request[user_id]
-            await update.message.reply_text("❌ Вердикт отменён.")
-            return
-        else:
-            await update.message.reply_text("⏳ Пожалуйста, ответьте *да* или *нет*.")
-            return
     
     # === ОБЫЧНЫЙ ОТВЕТ ===
     reply = await ask_switai(chat_id, user_id, text)
@@ -677,6 +725,8 @@ def main():
     app.add_handler(CommandHandler("userinfo", userinfo_command))
     app.add_handler(CommandHandler("say", say_command))
     app.add_handler(CommandHandler("clear_chat", clear_chat_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("start", start_command))
     
     print("✅ SwitAI финальная версия запущена!")
     app.run_polling()
