@@ -289,22 +289,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
 
-    # === ПРОВЕРКА УПОМИНАНИЯ В ГРУППЕ ===
+    # === ПРОВЕРКА УПОМИНАНИЯ В ГРУППЕ (РАБОТАЕТ В ТОПИКАХ) ===
     if chat_type in ["group", "supergroup"]:
-        # Проверяем, есть ли упоминание бота в тексте
-        if context.bot.username in text:
-            pass  # упоминание есть
-        else:
-            # Проверяем через entities
-            if not update.message.entities:
-                return
-            bot_mentioned = False
-            for entity in update.message.entities:
-                if entity.type == "mention" and text[entity.offset:entity.offset+entity.length] == f"@{context.bot.username}":
-                    bot_mentioned = True
-                    break
-            if not bot_mentioned:
-                return
+        if context.bot.username.lower() not in text.lower():
+            return
 
     # === ВЕРДИКТ СБОР ===
     if re.search(r"^вердикт$", text, re.IGNORECASE):
@@ -389,7 +377,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
 
-    print("✅ SwitAI бот с авторазбивкой и поиском успешно запущен!")
+    print("✅ SwitAI бот с поддержкой супергрупп и топиков успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
