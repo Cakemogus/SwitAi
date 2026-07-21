@@ -23,6 +23,10 @@ def health_check():
 def run_web():
     app_web.run(host='0.0.0.0', port=10000)
 
+# === ХРАНИЛИЩА ===
+user_message_buffer = {}      # для склеивания длинных сообщений
+verdict_buffer = {}           # для сбора информации для вердикта
+
 # === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
     "🇨🇳 +100 социальный кредит! Кошко-девочка одобряет! 🐱",
@@ -179,7 +183,7 @@ async def ask_switai(prompt: str) -> str:
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === ОБРАБОТЧИК СООБЩЕНИЙ ===
+# === ОБРАБОТЧИК СООБЩЕНИЙ (СБОР ДЛЯ ВЕРДИКТА) ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -189,12 +193,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.bot.username in update.message.text:
             return
 
-    user_text = update.message.text
-    reply = await ask_switai(user_text)
+    user_id = update.message.from_user.id
+    text = update.message.text
 
+    # === КОМАНДА ВЕРДИКТ — НАЧАЛО СБОРА ===
+    if re.search(r"^вердикт$", text, re.IGNORECASE):
+        verdict_buffer[user_id] = ""
+        await update.message.reply_text("📝 Начинаю сбор информации для вердикта. Пишите всё, что считаете нужным. Для завершения напишите *вердиктстоп*.")
+        return
+
+    # === КОМАНДА ВЕРДИКТСТОП — ВЫДАЧА ВЕРДИКТА ===
+    if re.search(r"^вердиктстоп$", text, re.IGNORECASE):
+        if user_id not in verdict_buffer or not verdict_buffer[user_id].strip():
+            await update.message.reply_text("❌ Вы не отправили никакой информации для вердикта.")
+            return
+        
+        full_text = verdict_buffer[user_id]
+        del verdict_buffer[user_id]
+        
+        reply = await ask_switai(f"вердикт {full_text}")
+        await update.message.reply_text(reply)
+        return
+
+    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА — СОХРАНЯЕМ ТЕКСТ ===
+    if user_id in verdict_buffer:
+        verdict_buffer[user_id] += " " + text
+        await update.message.reply_text("📌 Информация сохранена. Продолжайте или напишите *вердиктстоп* для завершения.")
+        return
+
+    # === ОБЫЧНЫЙ РЕЖИМ (короткие сообщения) ===
+    if len(text) <= 4096:
+        reply = await ask_switai(text)
+        if random.random() < 0.1:
+            reply += random.choice(EASTER_EGGS)
+        await update.message.reply_text(reply)
+        return
+
+    # === ДЛИННЫЕ СООБЩЕНИЯ (склеивание) ===
+    if user_id not in user_message_buffer:
+        user_message_buffer[user_id] = text
+        await update.message.reply_text("📄 Текст длинный. Жду продолжение...")
+        return
+
+    user_message_buffer[user_id] += " " + text
+    full_text = user_message_buffer[user_id]
+    del user_message_buffer[user_id]
+
+    reply = await ask_switai(full_text)
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
-
     await update.message.reply_text(reply)
 
 # === ЗАПУСК ===
@@ -213,7 +260,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
 
-    print("✅ SwitAI бот с веб-сервером успешно запущен!")
+    print("✅ SwitAI бот с веб-сервером и сбором для вердикта успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
