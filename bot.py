@@ -26,6 +26,7 @@ def run_web():
 # === ХРАНИЛИЩА ===
 user_message_buffer = {}      # для склеивания длинных сообщений
 verdict_buffer = {}           # для сбора информации для вердикта
+war_buffer = {}               # для военного анализа
 
 # === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
@@ -99,7 +100,7 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
-    # === КОМАНДА ВЕРДИКТ (УСИЛЕННЫЙ С ПРОГНОЗОМ) ===
+    # === КОМАНДА ВЕРДИКТ (УНИВЕРСАЛЬНЫЙ) ===
     if re.search(r"вердикт", prompt, re.IGNORECASE):
         text_to_judge = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
         if not text_to_judge:
@@ -111,23 +112,27 @@ async def ask_switai(prompt: str) -> str:
         }
 
         judge_prompt = (
-            f"Оцени следующее утверждение или идею по шкале от 1 до 10. "
-            f"Структурируй ответ строго по разделам:\n\n"
-            f"📌 Оценка: X/10\n\n"
-            f"✅ Плюсы:\n- (перечисли 2-4 пункта)\n\n"
-            f"❌ Минусы:\n- (перечисли 2-4 пункта)\n\n"
-            f"⚠️ Риски:\n- (перечисли 2-4 пункта)\n\n"
-            f"🔮 Что из этого выйдет:\n- (краткий прогноз последствий, 2-3 предложения)\n\n"
-            f"🛡️ Рекомендация:\n- (краткая рекомендация, 1-2 предложения)\n\n"
-            f"Текст для оценки: {text_to_judge}\n\n"
-            f"Если текст связан со Швейцарией, в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
+            f"Ты — жёсткий швейцарский аналитик. Разбери следующий текст. "
+            f"Если это экономика — укажи конкретные риски (отказ партнёров, санкции, конкуренты). "
+            f"Если это война — дай сценарий, потери и итог. "
+            f"Если это идея — укажи слабые места и альтернативу.\n\n"
+            f"Текст: {text_to_judge}\n\n"
+            f"Структура ответа:\n"
+            f"📌 Оценка: X/10\n"
+            f"✅ Плюсы:\n- ...\n"
+            f"❌ Минусы:\n- ...\n"
+            f"⚠️ Риски:\n- ... (конкретные, с именами, если есть)\n"
+            f"🔮 Что из этого выйдет:\n- ...\n"
+            f"🏆 Как сделать правильно:\n1. ...\n2. ...\n"
+            f"🛡️ Рекомендация:\n- ...\n"
+            f"Если текст связан со Швейцарией — в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
         )
 
         data = {
             "model": "llama-3.3-70b-versatile",
             "temperature": 0.3,
             "messages": [
-                {"role": "system", "content": "Ты — строгий, но справедливый швейцарский эксперт. Оценивай чётко, без воды. Отвечай строго по структуре."},
+                {"role": "system", "content": "Ты — жёсткий аналитик. Не бойся критиковать. Отвечай чётко, без воды."},
                 {"role": "user", "content": judge_prompt}
             ]
         }
@@ -140,6 +145,48 @@ async def ask_switai(prompt: str) -> str:
                 return f"📊 *Вердикт SwitAI:*\n\n{result}"
         except Exception as e:
             return f"❌ Швейцарский суд временно не работает: {str(e)}"
+
+    # === ВОЕННЫЙ АНАЛИЗ ===
+    if re.search(r"война", prompt, re.IGNORECASE):
+        text_to_analyze = re.sub(r"война\s*", "", prompt, flags=re.IGNORECASE).strip()
+        if not text_to_analyze:
+            return "❌ Месье, вы не указали данные для военного анализа."
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        war_prompt = (
+            f"Ты — военный аналитик с 20-летним опытом. На основе следующих данных составь максимально детальный прогноз боевых действий.\n\n"
+            f"Данные: {text_to_analyze}\n\n"
+            f"Структурируй ответ строго по разделам:\n"
+            f"⚔️ Анализ сил сторон:\n- ...\n"
+            f"🗺️ Сценарий боевых действий:\n- ...\n"
+            f"💀 Прогноз потерь:\n- Сторона А: ...\n- Сторона Б: ...\n- Гражданские: ...\n"
+            f"⏳ Продолжительность:\n- ...\n"
+            f"🏁 Итог войны:\n- ...\n"
+            f"⚠️ Риски:\n- ...\n"
+            f"Если текст связан со Швейцарией — в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
+        )
+
+        data = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.3,
+            "messages": [
+                {"role": "system", "content": "Ты — военный аналитик. Отвечай чётко, без воды."},
+                {"role": "user", "content": war_prompt}
+            ]
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(GROQ_URL, headers=headers, json=data)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"]
+                return f"⚔️ *Военный анализ SwitAI:*\n\n{result}"
+        except Exception as e:
+            return f"❌ Военный аналитик временно не доступен: {str(e)}"
 
     # === ПАСХАЛКИ ===
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
@@ -183,7 +230,7 @@ async def ask_switai(prompt: str) -> str:
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
 
-# === ОБРАБОТЧИК СООБЩЕНИЙ (СБОР ДЛЯ ВЕРДИКТА) ===
+# === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -202,23 +249,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📝 Начинаю сбор информации для вердикта. Пишите всё, что считаете нужным. Для завершения напишите *вердиктстоп*.")
         return
 
-    # === КОМАНДА ВЕРДИКТСТОП — ВЫДАЧА ВЕРДИКТА ===
+    # === КОМАНДА ВЕРДИКТСТОП ===
     if re.search(r"^вердиктстоп$", text, re.IGNORECASE):
         if user_id not in verdict_buffer or not verdict_buffer[user_id].strip():
             await update.message.reply_text("❌ Вы не отправили никакой информации для вердикта.")
             return
-        
         full_text = verdict_buffer[user_id]
         del verdict_buffer[user_id]
-        
         reply = await ask_switai(f"вердикт {full_text}")
         await update.message.reply_text(reply)
         return
 
-    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА — СОХРАНЯЕМ ТЕКСТ ===
+    # === КОМАНДА ВОЙНАСТАРТ ===
+    if re.search(r"^войнастарт$", text, re.IGNORECASE):
+        war_buffer[user_id] = ""
+        await update.message.reply_text("⚔️ Начинаю сбор данных для военного анализа. Пишите всё, что связано с войной. Для завершения напишите *войнастоп*.")
+        return
+
+    # === КОМАНДА ВОЙНАСТОП ===
+    if re.search(r"^войнастоп$", text, re.IGNORECASE):
+        if user_id not in war_buffer or not war_buffer[user_id].strip():
+            await update.message.reply_text("❌ Вы не отправили никаких данных для военного анализа.")
+            return
+        full_text = war_buffer[user_id]
+        del war_buffer[user_id]
+        reply = await ask_switai(f"война {full_text}")
+        await update.message.reply_text(reply)
+        return
+
+    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА ДЛЯ ВЕРДИКТА ===
     if user_id in verdict_buffer:
         verdict_buffer[user_id] += " " + text
         await update.message.reply_text("📌 Информация сохранена. Продолжайте или напишите *вердиктстоп* для завершения.")
+        return
+
+    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА ДЛЯ ВОЙНЫ ===
+    if user_id in war_buffer:
+        war_buffer[user_id] += " " + text
+        await update.message.reply_text("📌 Данные сохранены. Продолжайте или напишите *войнастоп* для завершения.")
         return
 
     # === ОБЫЧНЫЙ РЕЖИМ (короткие сообщения) ===
@@ -238,7 +306,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message_buffer[user_id] += " " + text
     full_text = user_message_buffer[user_id]
     del user_message_buffer[user_id]
-
     reply = await ask_switai(full_text)
     if random.random() < 0.1:
         reply += random.choice(EASTER_EGGS)
@@ -250,17 +317,15 @@ def main():
         print("❌ Не установлены переменные окружения!")
         return
 
-    # Запускаем веб-сервер для Render
     thread = Thread(target=run_web)
     thread.daemon = True
     thread.start()
 
-    # Запускаем бота
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
 
-    print("✅ SwitAI бот с веб-сервером и сбором для вердикта успешно запущен!")
+    print("✅ SwitAI бот с веб-сервером и универсальным вердиктом успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
