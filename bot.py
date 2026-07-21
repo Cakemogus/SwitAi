@@ -24,9 +24,9 @@ def run_web():
     app_web.run(host='0.0.0.0', port=10000)
 
 # === ХРАНИЛИЩА ===
-user_message_buffer = {}      # для склеивания длинных сообщений
-verdict_buffer = {}           # для сбора информации для вердикта
-war_buffer = {}               # для военного анализа
+user_message_buffer = {}
+verdict_buffer = {}
+war_buffer = {}
 
 # === КИТАЙСКИЙ БЕЗУМНЫЙ РЕЖИМ ===
 CHINA_MODE_RESPONSES = [
@@ -100,7 +100,7 @@ EASTER_EGGS = [
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(prompt: str) -> str:
-    # === КОМАНДА ВЕРДИКТ (УНИВЕРСАЛЬНЫЙ) ===
+    # === КОМАНДА ВЕРДИКТ ===
     if re.search(r"вердикт", prompt, re.IGNORECASE):
         text_to_judge = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
         if not text_to_judge:
@@ -124,8 +124,7 @@ async def ask_switai(prompt: str) -> str:
             f"⚠️ Риски:\n- ... (конкретные, с именами, если есть)\n"
             f"🔮 Что из этого выйдет:\n- ...\n"
             f"🏆 Как сделать правильно:\n1. ...\n2. ...\n"
-            f"🛡️ Рекомендация:\n- ...\n"
-            f"Если текст связан со Швейцарией — в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
+            f"🛡️ Рекомендация:\n- ..."
         )
 
         data = {
@@ -160,21 +159,39 @@ async def ask_switai(prompt: str) -> str:
         war_prompt = (
             f"Ты — военный аналитик с 20-летним опытом. На основе следующих данных составь максимально детальный прогноз боевых действий.\n\n"
             f"Данные: {text_to_analyze}\n\n"
-            f"Структурируй ответ строго по разделам:\n"
-            f"⚔️ Анализ сил сторон:\n- ...\n"
-            f"🗺️ Сценарий боевых действий:\n- ...\n"
-            f"💀 Прогноз потерь:\n- Сторона А: ...\n- Сторона Б: ...\n- Гражданские: ...\n"
-            f"⏳ Продолжительность:\n- ...\n"
-            f"🏁 Итог войны:\n- ...\n"
-            f"⚠️ Риски:\n- ...\n"
-            f"Если текст связан со Швейцарией — в конце добавь 🇨🇭 Слава Швейцарии! 🇨🇭"
+            f"Структурируй ответ строго по разделам. Если данных недостаточно — укажи, чего не хватает.\n\n"
+            f"🌍 *Условия:*\n"
+            f"- Местность: (если указана — используй; если нет — предположи на основе географии)\n"
+            f"- Погода: (температура, осадки, видимость — если есть данные)\n"
+            f"- Время суток: (день/ночь/сумерки — если указано)\n\n"
+            f"⚔️ *Анализ сил сторон:*\n"
+            f"- Сторона А: (численность, техника, преимущества, слабые места)\n"
+            f"- Сторона Б: (численность, техника, преимущества, слабые места)\n\n"
+            f"🗺️ *Сценарий боевых действий:*\n"
+            f"- (поэтапное описание: 1-й этап, 2-й этап, 3-й этап, возможные повороты с учётом местности и погоды)\n\n"
+            f"🎲 *Шансы на победу:*\n"
+            f"- Сторона А: X%\n"
+            f"- Сторона Б: Y%\n"
+            f"- (с учётом всех факторов)\n\n"
+            f"💀 *Прогноз потерь:*\n"
+            f"- Сторона А: (люди, техника, по этапам)\n"
+            f"- Сторона Б: (люди, техника, по этапам)\n"
+            f"- Гражданские: (оценка)\n\n"
+            f"⏳ *Продолжительность:*\n"
+            f"- (прогноз длительности конфликта с учётом сезона и местности)\n\n"
+            f"🏁 *Итог войны:*\n"
+            f"- (кто победит, при каких условиях, что будет с территорией)\n\n"
+            f"⚠️ *Риски и неопределённости:*\n"
+            f"- (2-4 фактора, которые могут изменить ход войны)\n\n"
+            f"🛡️ *Рекомендация:*\n"
+            f"- (краткая рекомендация по действиям)"
         )
 
         data = {
             "model": "llama-3.3-70b-versatile",
             "temperature": 0.3,
             "messages": [
-                {"role": "system", "content": "Ты — военный аналитик. Отвечай чётко, без воды."},
+                {"role": "system", "content": "Ты — военный аналитик. Отвечай максимально детально, профессионально, без воды. Учитывай все факторы: местность, погоду, время суток, логистику."},
                 {"role": "user", "content": war_prompt}
             ]
         }
@@ -243,13 +260,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text
 
-    # === КОМАНДА ВЕРДИКТ — НАЧАЛО СБОРА ===
+    # === ВЕРДИКТ СБОР ===
     if re.search(r"^вердикт$", text, re.IGNORECASE):
         verdict_buffer[user_id] = ""
         await update.message.reply_text("📝 Начинаю сбор информации для вердикта. Пишите всё, что считаете нужным. Для завершения напишите *вердиктстоп*.")
         return
 
-    # === КОМАНДА ВЕРДИКТСТОП ===
     if re.search(r"^вердиктстоп$", text, re.IGNORECASE):
         if user_id not in verdict_buffer or not verdict_buffer[user_id].strip():
             await update.message.reply_text("❌ Вы не отправили никакой информации для вердикта.")
@@ -260,13 +276,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # === КОМАНДА ВОЙНАСТАРТ ===
+    # === ВОЙНА СБОР ===
     if re.search(r"^войнастарт$", text, re.IGNORECASE):
         war_buffer[user_id] = ""
         await update.message.reply_text("⚔️ Начинаю сбор данных для военного анализа. Пишите всё, что связано с войной. Для завершения напишите *войнастоп*.")
         return
 
-    # === КОМАНДА ВОЙНАСТОП ===
     if re.search(r"^войнастоп$", text, re.IGNORECASE):
         if user_id not in war_buffer or not war_buffer[user_id].strip():
             await update.message.reply_text("❌ Вы не отправили никаких данных для военного анализа.")
@@ -277,19 +292,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА ДЛЯ ВЕРДИКТА ===
+    # === СОХРАНЕНИЕ В БУФЕРА ===
     if user_id in verdict_buffer:
         verdict_buffer[user_id] += " " + text
         await update.message.reply_text("📌 Информация сохранена. Продолжайте или напишите *вердиктстоп* для завершения.")
         return
 
-    # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ В РЕЖИМЕ СБОРА ДЛЯ ВОЙНЫ ===
     if user_id in war_buffer:
         war_buffer[user_id] += " " + text
         await update.message.reply_text("📌 Данные сохранены. Продолжайте или напишите *войнастоп* для завершения.")
         return
 
-    # === ОБЫЧНЫЙ РЕЖИМ (короткие сообщения) ===
+    # === ОБЫЧНЫЙ ОТВЕТ ===
     if len(text) <= 4096:
         reply = await ask_switai(text)
         if random.random() < 0.1:
@@ -297,7 +311,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # === ДЛИННЫЕ СООБЩЕНИЯ (склеивание) ===
+    # === ДЛИННЫЙ ТЕКСТ ===
     if user_id not in user_message_buffer:
         user_message_buffer[user_id] = text
         await update.message.reply_text("📄 Текст длинный. Жду продолжение...")
@@ -325,7 +339,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("health", health_check))
 
-    print("✅ SwitAI бот с веб-сервером и универсальным вердиктом успешно запущен!")
+    print("✅ SwitAI бот успешно запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
