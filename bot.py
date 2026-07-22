@@ -154,48 +154,6 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE):
         return random.choice(DARK_JOKES)
     
-    # === ВЕРДИКТ ===
-    if "вердикт" in prompt.lower():
-        topic = re.sub(r"вердикт\s*", "", prompt, flags=re.IGNORECASE).strip()
-        if not topic:
-            return "❌ Месье, укажите тему для вердикта."
-
-        past_verdicts = []
-        history = get_user_history(chat_id, user_id, limit=50)
-        for msg in history:
-            if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
-                past_verdicts.append(msg['content'])
-
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        verdict_prompt = (
-            f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
-            f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
-            + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
-            + "\n\nВыдай структурированный ответ:\n"
-            "📌 Тема: ...\n"
-            "📊 Текущий вердикт: ...\n"
-            "📈 Сравнение с прошлым: ...\n"
-            "🎯 Прогноз: ...\n"
-            "🛡️ Рекомендация: ...\n"
-            "💡 Плюсы: ...\n"
-            "⚠️ Минусы: ..."
-        )
-
-        data = {
-            "model": "groq/compound",
-            "temperature": 0.3,
-            "messages": [{"role": "user", "content": verdict_prompt}]
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(GROQ_URL, headers=headers, json=data)
-                resp.raise_for_status()
-                result = resp.json()["choices"][0]["message"]["content"]
-                return f"📊 *Вердикт SwitAI:*\n\n{result}"
-        except Exception as e:
-            return f"❌ Швейцарский суд временно не работает: {str(e)}"
-    
     # === ОСНОВНОЙ ЗАПРОС ===
     add_to_history(chat_id, user_id, "user", prompt)
     
@@ -694,7 +652,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
                 return
     
-    # === ТРИГГЕР НА «СВИТ» (ПОЛНАЯ ЗАМЕНА @) ===
+    # === ТРИГГЕР НА «СВИТ» ===
     if re.search(r"\b(свит|Свит)\b", text):
         question = re.sub(r"(свит|Свит)\s*", "", text, flags=re.IGNORECASE).strip()
         if question:
@@ -706,50 +664,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(reply)
                 return
             
-            # === 2. Вердикт ===
+            # === 2. Вердикт с таймером ===
             if re.search(r"вердикт", question, re.IGNORECASE):
-                # Извлекаем тему вердикта
                 topic = re.sub(r"вердикт\s*", "", question, flags=re.IGNORECASE).strip()
                 if not topic:
                     await update.message.reply_text(f"{user_mention}, укажите тему для вердикта.")
                     return
                 
-                # Ищем прошлые вердикты
-                past_verdicts = []
-                history = get_user_history(chat_id, user_id, limit=50)
-                for msg in history:
-                    if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
-                        past_verdicts.append(msg['content'])
-
-                headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                verdict_prompt = (
-                    f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
-                    f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
-                    + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
-                    + "\n\nВыдай структурированный ответ:\n"
-                    "📌 Тема: ...\n"
-                    "📊 Текущий вердикт: ...\n"
-                    "📈 Сравнение с прошлым: ...\n"
-                    "🎯 Прогноз: ...\n"
-                    "🛡️ Рекомендация: ...\n"
-                    "💡 Плюсы: ...\n"
-                    "⚠️ Минусы: ..."
+                # Сохраняем запрос
+                verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
+                
+                # Отправляем сообщение с вопросом
+                msg = await update.message.reply_text(
+                    f"{user_mention}, вы хотите получить вердикт по теме: *{topic}*?\n\n"
+                    "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
+                    "Напишите *нет* или ничего — чтобы отменить."
                 )
-
-                data = {
-                    "model": "groq/compound",
-                    "temperature": 0.3,
-                    "messages": [{"role": "user", "content": verdict_prompt}]
-                }
-
-                try:
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        resp = await client.post(GROQ_URL, headers=headers, json=data)
-                        resp.raise_for_status()
-                        result = resp.json()["choices"][0]["message"]["content"]
-                        await update.message.reply_text(f"{user_mention}, {result}")
-                except Exception as e:
-                    await update.message.reply_text(f"{user_mention}, ❌ Швейцарский суд временно не работает: {str(e)}")
+                
+                # Запускаем таймер на удаление через 15 секунд
+                async def delete_after_delay():
+                    await asyncio.sleep(15)
+                    if user_id in verdict_request:
+                        del verdict_request[user_id]
+                        try:
+                            await msg.delete()
+                        except:
+                            pass
+                
+                asyncio.create_task(delete_after_delay())
                 return
             
             # === 3. Вероятность ===
@@ -808,6 +750,88 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{user_mention}, {reply}")
             return
     
+    # === ВЕРДИКТ С ТАЙМЕРОМ (без «свит») ===
+    if "вердикт" in text.lower():
+        topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
+        if not topic:
+            await update.message.reply_text("❌ Месье, укажите тему для вердикта.")
+            return
+        
+        # Сохраняем запрос
+        verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
+        
+        # Отправляем сообщение с вопросом
+        msg = await update.message.reply_text(
+            f"📝 Месье, вы хотите получить вердикт по теме: *{topic}*?\n\n"
+            "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
+            "Напишите *нет* или ничего — чтобы отменить."
+        )
+        
+        # Запускаем таймер на удаление через 15 секунд
+        async def delete_after_delay():
+            await asyncio.sleep(15)
+            if user_id in verdict_request:
+                del verdict_request[user_id]
+                try:
+                    await msg.delete()
+                except:
+                    pass
+        
+        asyncio.create_task(delete_after_delay())
+        return
+    
+    # === ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ ВЕРДИКТА ===
+    if user_id in verdict_request:
+        if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
+            data = verdict_request[user_id]
+            del verdict_request[user_id]
+            
+            topic = data['topic']
+            past_verdicts = []
+            history = get_user_history(chat_id, user_id, limit=50)
+            for msg in history:
+                if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
+                    past_verdicts.append(msg['content'])
+
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            verdict_prompt = (
+                f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
+                f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
+                + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
+                + "\n\nВыдай структурированный ответ:\n"
+                "📌 Тема: ...\n"
+                "📊 Текущий вердикт: ...\n"
+                "📈 Сравнение с прошлым: ...\n"
+                "🎯 Прогноз: ...\n"
+                "🛡️ Рекомендация: ...\n"
+                "💡 Плюсы: ...\n"
+                "⚠️ Минусы: ..."
+            )
+
+            data = {
+                "model": "groq/compound",
+                "temperature": 0.3,
+                "messages": [{"role": "user", "content": verdict_prompt}]
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(GROQ_URL, headers=headers, json=data)
+                    resp.raise_for_status()
+                    result = resp.json()["choices"][0]["message"]["content"]
+                    await update.message.reply_text(f"📊 *Вердикт SwitAI:*\n\n{result}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Швейцарский суд временно не работает: {str(e)}")
+            return
+        
+        elif re.search(r"^(нет|no|не|отмена|не надо)$", text, re.IGNORECASE):
+            del verdict_request[user_id]
+            await update.message.reply_text("❌ Вердикт отменён.")
+            return
+        else:
+            await update.message.reply_text("⏳ Пожалуйста, ответьте *да* или *нет*.")
+            return
+    
     # === АНАЛИЗ ВЕРОЯТНОСТИ (без «свит») ===
     if re.search(r"какая вероятность|вероятность|шанс|каков шанс", text, re.IGNORECASE):
         import random as rnd
@@ -853,50 +877,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"@{update.message.from_user.username}, вероятность для @{target} составляет {probability}%.")
         else:
             await update.message.reply_text(f"@{update.message.from_user.username}, вероятность составляет {probability}%.")
-        return
-    
-    # === ВЕРДИКТ (без «свит») ===
-    if "вердикт" in text.lower():
-        topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
-        if not topic:
-            await update.message.reply_text("❌ Месье, укажите тему для вердикта.")
-            return
-
-        past_verdicts = []
-        history = get_user_history(chat_id, user_id, limit=50)
-        for msg in history:
-            if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
-                past_verdicts.append(msg['content'])
-
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        verdict_prompt = (
-            f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
-            f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
-            + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
-            + "\n\nВыдай структурированный ответ:\n"
-            "📌 Тема: ...\n"
-            "📊 Текущий вердикт: ...\n"
-            "📈 Сравнение с прошлым: ...\n"
-            "🎯 Прогноз: ...\n"
-            "🛡️ Рекомендация: ...\n"
-            "💡 Плюсы: ...\n"
-            "⚠️ Минусы: ..."
-        )
-
-        data = {
-            "model": "groq/compound",
-            "temperature": 0.3,
-            "messages": [{"role": "user", "content": verdict_prompt}]
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(GROQ_URL, headers=headers, json=data)
-                resp.raise_for_status()
-                result = resp.json()["choices"][0]["message"]["content"]
-                await update.message.reply_text(f"📊 *Вердикт SwitAI:*\n\n{result}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Швейцарский суд временно не работает: {str(e)}")
         return
     
     # === ОБЫЧНЫЙ ОТВЕТ ===
@@ -946,7 +926,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия запущена!")
+    print("✅ SwitAI финальная версия с таймером вердикта запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
