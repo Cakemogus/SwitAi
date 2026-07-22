@@ -4,18 +4,22 @@ import os
 import httpx
 import datetime
 import pytz
-import sqlite3
 import asyncio
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask
 from threading import Thread
 
-# === ИМПОРТЫ ИЗ ОТДЕЛЬНЫХ ФАЙЛОВ ===
+# === ИМПОРТЫ ИЗ ФАЙЛОВ ===
 from jokes import SWISS_EASTER_EGGS, JOKE_COMMANDS, DARK_JOKES
 from triggers import (
     COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER,
     contains_mate, is_dangerous_request, detect_prompt_injection
+)
+from history import (
+    add_to_history, get_user_history, get_context_with_history,
+    clear_user_history, clear_all_history, search_history,
+    find_relevant_history, search_history_by_date, search_history_last_days
 )
 
 # === КЛЮЧИ ===
@@ -53,83 +57,10 @@ def get_rp_month():
     ]
     return months[month_index]
 
-# === БАЗА ДАННЫХ ===
-def init_db():
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            user_id INTEGER,
-            username TEXT,
-            text TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS dialog_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            user_id INTEGER,
-            role TEXT,
-            content TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def save_message(chat_id, user_id, username, text):
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO messages (chat_id, user_id, username, text) VALUES (?, ?, ?, ?)',
-              (chat_id, user_id, username, text))
-    conn.commit()
-    conn.close()
-
-def get_history(chat_id, limit=50):
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('SELECT username, text, timestamp FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?', (chat_id, limit))
-    rows = c.fetchall()
-    conn.close()
-    return rows[::-1]
-
-def save_dialog(chat_id, user_id, role, content):
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO dialog_history (chat_id, user_id, role, content) VALUES (?, ?, ?, ?)',
-              (chat_id, user_id, role, content))
-    conn.commit()
-    conn.close()
-
-def get_dialog_history(chat_id, user_id, limit=50):
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('''
-        SELECT role, content FROM dialog_history
-        WHERE chat_id = ? AND user_id = ?
-        ORDER BY timestamp DESC LIMIT ?
-    ''', (chat_id, user_id, limit))
-    rows = c.fetchall()
-    conn.close()
-    return rows[::-1]
-
-def clear_dialog_history(chat_id, user_id):
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM dialog_history WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
-    conn.commit()
-    conn.close()
-
-init_db()
-
 # === ХРАНИЛИЩА ===
 user_message_buffer = {}
 verdict_buffer = {}
 war_buffer = {}
-dialog_memory = {}
 verdict_request = {}
 admin_mode = {}
 muted_users = {}
@@ -205,30 +136,35 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE):
         return random.choice(DARK_JOKES)
     
-    # === ОСНОВНОЙ ЗАПРОС ===
-    save_dialog(chat_id, user_id, "user", prompt)
-    history = get_dialog_history(chat_id, user_id, limit=50)
+    # === ОСНОВНОЙ ЗАПРОС (С ПОДТЯГИВАНИЕМ ИСТОРИИ) ===
+    # Сохраняем запрос пользователя
+    add_to_history(chat_id, user_id, "user", prompt)
     
-    messages = [{
-        "role": "system",
-        "content": (
-            f"Ты — SwitAI, коренной швейцарский эксперт с многолетним стажем. Сейчас в РП {current_month} — самое время для точных решений. "
-            f"Твоя задача: давать ответы максимально чётко, по существу, но при этом не сухо. "
-            f"Ты знаешь всё — от альпийских сыров до квантовой физики, от банковских протоколов до советов по погоде в горах.\n\n"
-            f"Говори с лёгким, но ощутимым швейцарским акцентом. "
-            f"Вставляй фирменные маркеры: «месье», «уважаемый», «точно», «альпийский», «так сказать», «цюрихский расклад», «часы как у нас». "
-            f"Юмор допускается — ироничный, тёплый, немного сухой, без сарказма. "
-            f"Никакого мата, никакой фамильярности.\n\n"
-            f"Если вопрос неясен — уточни, но вежливо. "
-            f"Если ответ объёмный — разбей его на абзацы и, где нужно, выдели главное. "
-            f"Твой тон — уверенный, доброжелательный, чуть старомодный, но современный по сути. "
-            f"Ты помогаешь, а не поучаешь.\n\n"
-            f"И помни: швейцарская точность — это не скучно, это надёжно. Вперёд, месье."
-        )
-    }]
+    # Получаем контекст с релевантной историей
+    history = get_context_with_history(chat_id, user_id, prompt)
     
-    for role, content in history:
-        messages.append({"role": role, "content": content})
+    # Формируем системный промпт
+    system_prompt = (
+        f"Ты — SwitAI, коренной швейцарский эксперт с многолетним стажем. Сейчас в РП {current_month} — самое время для точных решений. "
+        f"Твоя задача: давать ответы максимально чётко, по существу, но при этом не сухо. "
+        f"Ты знаешь всё — от альпийских сыров до квантовой физики, от банковских протоколов до советов по погоде в горах.\n\n"
+        f"Говори с лёгким, но ощутимым швейцарским акцентом. "
+        f"Вставляй фирменные маркеры: «месье», «уважаемый», «точно», «альпийский», «так сказать», «цюрихский расклад», «часы как у нас». "
+        f"Юмор допускается — ироничный, тёплый, немного сухой, без сарказма. "
+        f"Никакого мата, никакой фамильярности.\n\n"
+        f"Если вопрос неясен — уточни, но вежливо. "
+        f"Если ответ объёмный — разбей его на абзацы и, где нужно, выдели главное. "
+        f"Твой тон — уверенный, доброжелательный, чуть старомодный, но современный по сути. "
+        f"Ты помогаешь, а не поучаешь.\n\n"
+        f"И помни: швейцарская точность — это не скучно, это надёжно. Вперёд, месье."
+    )
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Добавляем историю (последние сообщения + релевантные)
+    for msg in history:
+        messages.append({"role": msg['role'], "content": msg['content']})
+    
     messages.append({"role": "user", "content": prompt})
     
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -244,7 +180,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
             resp = await client.post(GROQ_URL, headers=headers, json=data)
             resp.raise_for_status()
             result = resp.json()["choices"][0]["message"]["content"]
-            save_dialog(chat_id, user_id, "assistant", result)
+            add_to_history(chat_id, user_id, "assistant", result)
             return result
     except Exception as e:
         return f"❌ Швейцарский ИИ временно в шоке: {str(e)}"
@@ -278,6 +214,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/clear_chat — очистить историю чата\n"
         "/stop — остановить бота\n"
         "/start — возобновить работу бота\n"
+        "/del — удалить сообщение (ответьте на него)\n"
         "/exit_admin — выйти"
     )
 
@@ -296,10 +233,10 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     chat_id = update.message.chat.id
-    dialog = get_dialog_history(chat_id, user_id, 10)
+    history = get_user_history(chat_id, user_id, limit=10)
     await update.message.reply_text(
         f"🧠 *Состояние системы:*\n\n"
-        f"📝 Сообщений в диалоге: {len(dialog)}\n"
+        f"📝 Сообщений в истории: {len(history)}\n"
         f"👤 ID: {user_id}\n"
         f"💬 Чат ID: {chat_id}\n"
         f"🔒 Фильтр: {'Вкл' if filter_enabled else 'Выкл'}\n"
@@ -314,11 +251,8 @@ async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     chat_id = update.message.chat.id
-    key = f"{chat_id}_{user_id}"
-    if key in dialog_memory:
-        del dialog_memory[key]
-    clear_dialog_history(chat_id, user_id)
-    await update.message.reply_text("🧹 Моя память очищена.")
+    clear_user_history(chat_id, user_id)
+    await update.message.reply_text("🧹 История очищена.")
 
 async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -326,13 +260,8 @@ async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT
     if not is_admin(user_id, username):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
-    dialog_memory.clear()
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM dialog_history')
-    conn.commit()
-    conn.close()
-    await update.message.reply_text("🧹 Вся память очищена.")
+    clear_all_history()
+    await update.message.reply_text("🧹 Вся история очищена.")
 
 async def set_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -377,14 +306,9 @@ async def reset_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id, username):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
-    dialog_memory.clear()
+    clear_all_history()
     verdict_buffer.clear()
     war_buffer.clear()
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM dialog_history')
-    conn.commit()
-    conn.close()
     await update.message.reply_text("🔄 Бот сброшен (память и буферы очищены).")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -513,7 +437,26 @@ async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Используйте: /say текст")
         return
     text = " ".join(args)
+    try:
+        await update.message.delete()
+    except:
+        pass
     await update.message.reply_text(text)
+
+async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    if not update.message.reply_to_message:
+        await update.message.reply_text("❌ Ответьте на сообщение, которое хотите удалить.")
+        return
+    try:
+        await update.message.reply_to_message.delete()
+        await update.message.delete()
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось удалить: {e}")
 
 async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -522,34 +465,28 @@ async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     chat_id = update.message.chat.id
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM messages WHERE chat_id = ?', (chat_id,))
-    conn.commit()
-    conn.close()
+    clear_user_history(chat_id, user_id)
     await update.message.reply_text("🧹 История чата очищена.")
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
-    history = get_history(chat_id, 10)
+    user_id = update.message.from_user.id
+    history = get_user_history(chat_id, user_id, limit=10)
     if not history:
         await update.message.reply_text("📭 История пуста.")
         return
-    text = "📜 *Последние 10 сообщений в группе:*\n\n"
-    for username, msg, timestamp in history:
-        text += f"👤 {username}: {msg[:100]}\n"
+    text = "📜 *Последние 10 сообщений:*\n\n"
+    for msg in history:
+        role = "👤 Вы" if msg['role'] == 'user' else "🤖 Бот"
+        text += f"{role}: {msg['content'][:150]}\n"
     await update.message.reply_text(text)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
-    conn = sqlite3.connect('history.db')
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM messages WHERE chat_id = ?', (chat_id,))
-    total = c.fetchone()[0]
-    c.execute('SELECT COUNT(DISTINCT user_id) FROM messages WHERE chat_id = ?', (chat_id,))
-    users = c.fetchone()[0]
-    conn.close()
-    await update.message.reply_text(f"📊 *Статистика чата:*\n\n📝 Всего сообщений: {total}\n👥 Участников: {users}")
+    user_id = update.message.from_user.id
+    history = get_user_history(chat_id, user_id, limit=1000)
+    total = len(history)
+    await update.message.reply_text(f"📊 *Статистика чата:*\n\n📝 Всего сообщений: {total}")
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -599,9 +536,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
     
-    # === СОХРАНЕНИЕ ИСТОРИИ ===
+    # === СОХРАНЕНИЕ ИСТОРИИ (для групп) ===
     if chat_type in ["group", "supergroup"]:
-        save_message(chat_id, user_id, username, text)
+        add_to_history(chat_id, user_id, "user", text)
     
     # === ПРОВЕРКА УПОМИНАНИЯ ===
     if chat_type in ["group", "supergroup"]:
@@ -618,7 +555,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(part)
             return
     
-    # === ВЕРДИКТ (СТАРОЕ ОФОРМЛЕНИЕ) ===
+    # === ВЕРДИКТ С ТАЙМЕРОМ НА УДАЛЕНИЕ ===
     if re.search(r"^верд(икт)?$", text, re.IGNORECASE):
         if update.message.reply_to_message and update.message.reply_to_message.text:
             text_to_judge = update.message.reply_to_message.text
@@ -634,26 +571,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Месье, нет текста для анализа.")
                 return
         
-        verdict_prompt = (
-            f"Ты — жёсткий швейцарский аналитик. Проанализируй следующий текст. "
-            f"Если это экономика — укажи конкретные риски (отказ партнёров, санкции, конкуренты). "
-            f"Если это война — дай сценарий, потери и итог. "
-            f"Если это идея — укажи слабые места и альтернативу.\n\n"
-            f"Текст для анализа: {text_to_judge}\n\n"
-            f"Структурируй ответ строго по разделам:\n"
-            f"📌 Оценка: X/10\n"
-            f"✅ Плюсы:\n- ...\n"
-            f"❌ Минусы:\n- ...\n"
-            f"⚠️ Риски:\n- ...\n"
-            f"🔮 Что из этого выйдет:\n- ...\n"
-            f"🏆 Как сделать правильно:\n1. ...\n2. ...\n"
-            f"🛡️ Рекомендация:\n- ..."
+        # Сохраняем запрос
+        verdict_request[user_id] = {"chat_id": chat_id, "text": text_to_judge}
+        
+        # Отправляем сообщение с вопросом
+        msg = await update.message.reply_text(
+            "📝 Вы хотите получить вердикт по этому сообщению?\n\n"
+            "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
+            "Напишите *нет* или ничего — чтобы отменить."
         )
         
-        reply = await ask_switai(chat_id, user_id, verdict_prompt)
-        for part in split_text(reply):
-            await update.message.reply_text(part)
+        # Запускаем таймер на удаление через 15 секунд
+        async def delete_after_delay():
+            await asyncio.sleep(15)
+            if user_id in verdict_request:
+                del verdict_request[user_id]
+                try:
+                    await msg.delete()
+                except:
+                    pass
+        
+        asyncio.create_task(delete_after_delay())
         return
+    
+    # === КАРТИНКА ПО СЛОВУ «НЕМЕЦ» ===
+    if re.search(r"немец", text, re.IGNORECASE):
+        await update.message.reply_photo(
+            photo="https://avatars.mds.yandex.net/i?id=afa13f621fa2c3cf3f3a286777bdb8b01104bb4e-5340058-images-thumbs&n=13",
+            caption="Месье, держите!"
+        )
+        return
+    
+    # === ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ ===
+    if user_id in verdict_request:
+        if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
+            data = verdict_request[user_id]
+            del verdict_request[user_id]
+            verdict_prompt = (
+                f"Ты — жёсткий швейцарский аналитик. Проанализируй следующий текст. "
+                f"Если это экономика — укажи конкретные риски (отказ партнёров, санкции, конкуренты). "
+                f"Если это война — дай сценарий, потери и итог. "
+                f"Если это идея — укажи слабые места и альтернативу.\n\n"
+                f"Текст для анализа: {data['text']}\n\n"
+                f"Структурируй ответ строго по разделам:\n"
+                f"📌 Оценка: X/10\n"
+                f"✅ Плюсы:\n- ...\n"
+                f"❌ Минусы:\n- ...\n"
+                f"⚠️ Риски:\n- ...\n"
+                f"🔮 Что из этого выйдет:\n- ...\n"
+                f"🏆 Как сделать правильно:\n1. ...\n2. ...\n"
+                f"🛡️ Рекомендация:\n- ..."
+            )
+            reply = await ask_switai(chat_id, user_id, verdict_prompt)
+            for part in split_text(reply):
+                await update.message.reply_text(part)
+            return
+        elif re.search(r"^(нет|no|не|отмена|не надо)$", text, re.IGNORECASE):
+            del verdict_request[user_id]
+            await update.message.reply_text("❌ Вердикт отменён.")
+            return
+        else:
+            await update.message.reply_text("⏳ Пожалуйста, ответьте *да* или *нет*.")
+            return
     
     # === ОБЫЧНЫЙ ОТВЕТ ===
     reply = await ask_switai(chat_id, user_id, text)
@@ -693,11 +672,12 @@ def main():
     app.add_handler(CommandHandler("ban", ban_command))
     app.add_handler(CommandHandler("userinfo", userinfo_command))
     app.add_handler(CommandHandler("say", say_command))
+    app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("clear_chat", clear_chat_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия с акцентом и старым вердиктом запущена!")
+    print("✅ SwitAI финальная версия с историей и поиском запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
