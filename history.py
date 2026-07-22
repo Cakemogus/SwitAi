@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 # === НАСТРОЙКИ ===
 HISTORY_FILE = "history.json"
-MAX_HISTORY_LENGTH = 1000  # максимальное количество сообщений на пользователя
-CONTEXT_LIMIT = 10  # сколько последних сообщений отправляем в запрос
-SEARCH_LIMIT = 5  # сколько релевантных сообщений подтягиваем из архива
+MAX_HISTORY_LENGTH = 10000  # Максимальное количество сообщений на пользователя
+CONTEXT_LIMIT = 10  # Сколько последних сообщений отправляем в запрос
+SEARCH_LIMIT = 5  # Сколько релевантных сообщений подтягиваем из архива
 
 # === ЗАГРУЗКА / СОХРАНЕНИЕ ===
 def load_history():
@@ -127,7 +127,6 @@ def find_relevant_history(chat_id, user_id, prompt, limit=SEARCH_LIMIT):
         return []
     
     results = []
-    # Идём с конца, чтобы взять самые свежие
     for msg in reversed(history[key]):
         content_lower = msg['content'].lower()
         for kw in keywords:
@@ -203,3 +202,15 @@ def get_context_with_history(chat_id, user_id, prompt):
             combined.append(msg)
     
     return combined[-CONTEXT_LIMIT:]  # оставляем не больше лимита
+
+# === ВЫВОД ВСЕЙ ИСТОРИИ ДЛЯ ОТЛАДКИ ===
+def debug_history(chat_id, user_id):
+    history = load_history()
+    key = get_user_key(chat_id, user_id)
+    if key not in history:
+        return "📭 История пуста."
+    text = "📜 *Вся история:*\n\n"
+    for msg in history[key]:
+        role = "👤 Вы" if msg['role'] == 'user' else "🤖 Бот"
+        text += f"{role}: {msg['content'][:100]}\n"
+    return text
