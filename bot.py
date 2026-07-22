@@ -5,6 +5,7 @@ import httpx
 import datetime
 import pytz
 import asyncio
+import json
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask
@@ -18,8 +19,7 @@ from triggers import (
 )
 from history import (
     add_to_history, get_user_history, get_context_with_history,
-    clear_user_history, clear_all_history, search_history,
-    find_relevant_history, search_history_by_date, search_history_last_days
+    clear_user_history, clear_all_history
 )
 
 # === КЛЮЧИ ===
@@ -33,6 +33,24 @@ ADMIN_USERNAME = "cakemogus"
 
 # === ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ ОСТАНОВКИ ===
 bot_stopped = False
+
+# === ФАЙЛ ДЛЯ СОХРАНЁННЫХ ЧАТОВ ===
+SAVED_CHATS_FILE = "saved_chats.json"
+
+def load_saved_chats():
+    if os.path.exists(SAVED_CHATS_FILE):
+        try:
+            with open(SAVED_CHATS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_saved_chats(chats):
+    with open(SAVED_CHATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(chats, f, ensure_ascii=False, indent=2)
+
+saved_chats = load_saved_chats()
 
 # === МИКРО-СЕРВЕР ДЛЯ RENDER ===
 app_web = Flask(__name__)
@@ -136,35 +154,19 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
     if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE):
         return random.choice(DARK_JOKES)
     
-    # === ОСНОВНОЙ ЗАПРОС (С ПОДТЯГИВАНИЕМ ИСТОРИИ) ===
-    # Сохраняем запрос пользователя
+    # === ОСНОВНОЙ ЗАПРОС ===
     add_to_history(chat_id, user_id, "user", prompt)
-    
-    # Получаем контекст с релевантной историей
     history = get_context_with_history(chat_id, user_id, prompt)
     
-    # Формируем системный промпт
     system_prompt = (
-        f"Ты — SwitAI, коренной швейцарский эксперт с многолетним стажем. Сейчас в РП {current_month} — самое время для точных решений. "
-        f"Твоя задача: давать ответы максимально чётко, по существу, но при этом не сухо. "
-        f"Ты знаешь всё — от альпийских сыров до квантовой физики, от банковских протоколов до советов по погоде в горах.\n\n"
-        f"Говори с лёгким, но ощутимым швейцарским акцентом. "
-        f"Вставляй фирменные маркеры: «месье», «уважаемый», «точно», «альпийский», «так сказать», «цюрихский расклад», «часы как у нас». "
-        f"Юмор допускается — ироничный, тёплый, немного сухой, без сарказма. "
-        f"Никакого мата, никакой фамильярности.\n\n"
-        f"Если вопрос неясен — уточни, но вежливо. "
-        f"Если ответ объёмный — разбей его на абзацы и, где нужно, выдели главное. "
-        f"Твой тон — уверенный, доброжелательный, чуть старомодный, но современный по сути. "
-        f"Ты помогаешь, а не поучаешь.\n\n"
-        f"И помни: швейцарская точность — это не скучно, это надёжно. Вперёд, месье."
+        f"Ты — SwitAI, коренной швейцарский эксперт с многолетним стажем. Сейчас в РП {current_month}. "
+        f"Говори с лёгким акцентом, используй «месье», «уважаемый», «точно». "
+        f"Помогай, шути, но без мата."
     )
     
     messages = [{"role": "system", "content": system_prompt}]
-    
-    # Добавляем историю (последние сообщения + релевантные)
     for msg in history:
         messages.append({"role": msg['role'], "content": msg['content']})
-    
     messages.append({"role": "user", "content": prompt})
     
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -211,6 +213,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ban @user — забанить\n"
         "/userinfo @user — информация\n"
         "/say текст — написать от имени бота\n"
+        "/saychat [имя] [текст] — написать в сохранённый чат\n"
+        "/savechat [имя] — сохранить этот чат под именем\n"
+        "/listchats — список сохранённых чатов\n"
+        "/removechat [имя] — удалить сохранённый чат\n"
         "/clear_chat — очистить историю чата\n"
         "/stop — остановить бота\n"
         "/start — возобновить работу бота\n"
@@ -432,16 +438,108 @@ async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id, username):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
+    
     args = context.args
     if not args:
         await update.message.reply_text("❌ Используйте: /say текст")
         return
+    
     text = " ".join(args)
+    
     try:
         await update.message.delete()
     except:
         pass
+    
     await update.message.reply_text(text)
+
+# === КОМАНДЫ ДЛЯ РАБОТЫ С СОХРАНЁННЫМИ ЧАТАМИ ===
+async def save_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите имя для этого чата. Например: /savechat альпы")
+        return
+
+    chat_name = args[0].lower()
+    chat_id = update.message.chat.id
+
+    saved_chats[chat_name] = chat_id
+    save_saved_chats(saved_chats)
+    await update.message.reply_text(f"✅ Чат сохранён как «{chat_name}» (ID: {chat_id})")
+
+async def say_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Используйте: /saychat [имя_чата] [текст]")
+        return
+
+    chat_name = args[0].lower()
+    text = " ".join(args[1:])
+
+    if chat_name not in saved_chats:
+        await update.message.reply_text(f"❌ Чат с именем «{chat_name}» не найден.")
+        return
+
+    target_chat_id = saved_chats[chat_name]
+
+    try:
+        await context.bot.send_message(chat_id=target_chat_id, text=text)
+        try:
+            await update.message.delete()
+        except:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось отправить: {e}")
+
+async def list_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+
+    if not saved_chats:
+        await update.message.reply_text("📭 Нет сохранённых чатов.")
+        return
+
+    text = "📋 *Сохранённые чаты:*\n\n"
+    for name, chat_id in saved_chats.items():
+        text += f"• {name} (ID: {chat_id})\n"
+    
+    await update.message.reply_text(text)
+
+async def remove_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    if not is_admin(user_id, username):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Используйте: /removechat [имя_чата]")
+        return
+
+    chat_name = args[0].lower()
+    if chat_name not in saved_chats:
+        await update.message.reply_text(f"❌ Чат с именем «{chat_name}» не найден.")
+        return
+
+    del saved_chats[chat_name]
+    save_saved_chats(saved_chats)
+    await update.message.reply_text(f"✅ Чат «{chat_name}» удалён.")
 
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -454,7 +552,6 @@ async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await update.message.reply_to_message.delete()
-        await update.message.delete()
     except Exception as e:
         await update.message.reply_text(f"❌ Не удалось удалить: {e}")
 
@@ -536,7 +633,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
     
-    # === СОХРАНЕНИЕ ИСТОРИИ (для групп) ===
+    # === СОХРАНЕНИЕ ИСТОРИИ ===
     if chat_type in ["group", "supergroup"]:
         add_to_history(chat_id, user_id, "user", text)
     
@@ -545,6 +642,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.bot.username.lower() not in text.lower():
             if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
                 return
+    
+    # === КАРТИНКА ПО СЛОВУ «НЕМЕЦ» ===
+    if re.search(r"немец", text, re.IGNORECASE):
+        await update.message.reply_photo(
+            photo="https://avatars.mds.yandex.net/i?id=afa13f621fa2c3cf3f3a286777bdb8b01104bb4e-5340058-images-thumbs&n=13",
+            caption="Месье, держите!"
+        )
+        return
     
     # === АВТО-ВЕРДИКТ ===
     if update.message.reply_to_message and context.bot.username.lower() in text.lower():
@@ -571,17 +676,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Месье, нет текста для анализа.")
                 return
         
-        # Сохраняем запрос
         verdict_request[user_id] = {"chat_id": chat_id, "text": text_to_judge}
-        
-        # Отправляем сообщение с вопросом
         msg = await update.message.reply_text(
             "📝 Вы хотите получить вердикт по этому сообщению?\n\n"
             "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
             "Напишите *нет* или ничего — чтобы отменить."
         )
         
-        # Запускаем таймер на удаление через 15 секунд
         async def delete_after_delay():
             await asyncio.sleep(15)
             if user_id in verdict_request:
@@ -594,14 +695,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(delete_after_delay())
         return
     
-    # === КАРТИНКА ПО СЛОВУ «НЕМЕЦ» ===
-    if re.search(r"немец", text, re.IGNORECASE):
-        await update.message.reply_photo(
-            photo="https://avatars.mds.yandex.net/i?id=afa13f621fa2c3cf3f3a286777bdb8b01104bb4e-5340058-images-thumbs&n=13",
-            caption="Месье, держите!"
-        )
-        return
-    
     # === ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ ===
     if user_id in verdict_request:
         if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
@@ -609,10 +702,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del verdict_request[user_id]
             verdict_prompt = (
                 f"Ты — жёсткий швейцарский аналитик. Проанализируй следующий текст. "
-                f"Если это экономика — укажи конкретные риски (отказ партнёров, санкции, конкуренты). "
-                f"Если это война — дай сценарий, потери и итог. "
+                f"Если это экономика — укажи конкретные риски. Если это война — дай сценарий и потери. "
                 f"Если это идея — укажи слабые места и альтернативу.\n\n"
-                f"Текст для анализа: {data['text']}\n\n"
+                f"Текст: {data['text']}\n\n"
                 f"Структурируй ответ строго по разделам:\n"
                 f"📌 Оценка: X/10\n"
                 f"✅ Плюсы:\n- ...\n"
@@ -672,12 +764,16 @@ def main():
     app.add_handler(CommandHandler("ban", ban_command))
     app.add_handler(CommandHandler("userinfo", userinfo_command))
     app.add_handler(CommandHandler("say", say_command))
+    app.add_handler(CommandHandler("saychat", say_chat_command))
+    app.add_handler(CommandHandler("savechat", save_chat_command))
+    app.add_handler(CommandHandler("listchats", list_chats_command))
+    app.add_handler(CommandHandler("removechat", remove_chat_command))
     app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("clear_chat", clear_chat_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия с историей и поиском запущена!")
+    print("✅ SwitAI финальная версия с saychat запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
