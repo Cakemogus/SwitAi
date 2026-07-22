@@ -11,7 +11,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes, Com
 from flask import Flask
 from threading import Thread
 
-# === ИМПОРТЫ ИЗ ФАЙЛОВ ===
+# === ИМПОРТЫ ===
 from jokes import SWISS_EASTER_EGGS, JOKE_COMMANDS, DARK_JOKES
 from triggers import (
     COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER,
@@ -195,6 +195,53 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, no_filter: bool = 
                 return f"📊 *Вердикт SwitAI:*\n\n{result}"
         except Exception as e:
             return f"❌ Швейцарский суд временно не работает: {str(e)}"
+    
+    # === АНАЛИЗ ВЕРОЯТНОСТИ ===
+    if re.search(r"какая вероятность|вероятность|шанс|каков шанс", prompt, re.IGNORECASE):
+        import random as rnd
+        
+        # Защита Кейка
+        if re.search(r"(кейк|президент|ги пармелен|пармелен)", prompt, re.IGNORECASE):
+            return f"0% — месье, оскорбления в сторону президента Швейцарии недопустимы."
+        
+        # === ЕСЛИ ПИШЕТ КЕЙК ===
+        if user_id == 7184396483:
+            if "+" in prompt:
+                probability = 100
+            elif "–" in prompt or "-" in prompt:
+                probability = 0
+            else:
+                probability = rnd.randint(0, 100)
+            return f"Вероятность составляет {probability}%."
+        
+        # === ДЛЯ ВСЕХ ОСТАЛЬНЫХ ===
+        try:
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            analysis_prompt = (
+                f"Проанализируй запрос и определи вероятность (в процентах) от 0 до 100. "
+                f"Учитывай контекст и логику. Ответь только числом.\n\nЗапрос: {prompt}"
+            )
+            data = {
+                "model": "groq/compound",
+                "temperature": 0.3,
+                "messages": [{"role": "user", "content": analysis_prompt}]
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(GROQ_URL, headers=headers, json=data)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"].strip()
+                
+                probability_match = re.search(r'\b\d{1,3}\b', result)
+                probability = int(probability_match.group()) if probability_match else 50
+                probability = max(0, min(100, probability))
+                
+        except Exception as e:
+            probability = rnd.randint(0, 100)
+            subtract = rnd.randint(10, 20)
+            probability = max(0, probability - subtract)
+        
+        return f"Вероятность составляет {probability}%."
     
     # === ОСНОВНОЙ ЗАПРОС ===
     add_to_history(chat_id, user_id, "user", prompt)
@@ -688,34 +735,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_type in ["group", "supergroup"]:
         add_to_history(chat_id, user_id, "user", text)
     
-    # === ТРИГГЕР НА «СВИТ» (РАБОТАЕТ БЕЗ УПОМИНАНИЯ) ===
-    if re.search(r"\b(свит|Свит)\b", text):
-        question = re.sub(r"(свит|Свит)\s*", "", text, flags=re.IGNORECASE).strip()
-        if question:
-            try:
-                # Если есть ответ на сообщение — используем того пользователя
-                if update.message.reply_to_message:
-                    target_user = update.message.reply_to_message.from_user
-                else:
-                    # Получаем список участников (только если бот админ)
-                    members = await context.bot.get_chat_administrators(chat_id)
-                    users = [m.user for m in members if not m.user.is_bot and m.user.id != 7184396483]
-                    target_user = random.choice(users) if users else None
-                
-                if target_user:
-                    target_name = target_user.username or target_user.first_name
-                    await update.message.reply_text(f"@{target_name}, {question}")
-                else:
-                    await update.message.reply_text(f"Случайный пользователь: {question}")
-            except:
-                await update.message.reply_text(f"Случайный пользователь: {question}")
-            return
-    
     # === ПРОВЕРКА УПОМИНАНИЯ ===
     if chat_type in ["group", "supergroup"]:
         if context.bot.username.lower() not in text.lower():
             if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
                 return
+    
+    # === ТРИГГЕР НА «СВИТ» ===
+    if re.search(r"\b(свит|Свит)\b", text):
+        question = re.sub(r"(свит|Свит)\s*", "", text, flags=re.IGNORECASE).strip()
+        if question:
+            # Если вопрос про "кто" — рандомный пользователь
+            if re.search(r"^(кто|кто такой|кто такая)", question, re.IGNORECASE):
+                try:
+                    if update.message.reply_to_message:
+                        target_user = update.message.reply_to_message.from_user
+                    else:
+                        members = await context.bot.get_chat_administrators(chat_id)
+                        users = [m.user for m in members if not m.user.is_bot and m.user.id != 7184396483]
+                        target_user = random.choice(users) if users else None
+                    
+                    if target_user:
+                        target_name = target_user.username or target_user.first_name
+                        await update.message.reply_text(f"@{target_name}, {question}")
+                    else:
+                        await update.message.reply_text(f"Случайный пользователь: {question}")
+                except:
+                    await update.message.reply_text(f"Случайный пользователь: {question}")
+                return
+            
+            # Остальное — через Groq
+            reply = await ask_switai(chat_id, user_id, question)
+            await update.message.reply_text(reply)
+            return
     
     # === АНАЛИЗ ВЕРОЯТНОСТИ ===
     if re.search(r"какая вероятность|вероятность|шанс|каков шанс", text, re.IGNORECASE):
@@ -726,39 +778,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"0% — месье, @{update.message.from_user.username}, оскорбления в сторону президента Швейцарии недопустимы.")
             return
         
-        # Если запрос не содержит ключевых слов — сразу рандом
-        if not re.search(r"(шанс|вероятность|возможно|наверное)", text, re.IGNORECASE):
-            probability = rnd.randint(0, 100)
-        else:
-            # Попытка запроса к Groq
-            try:
-                headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                analysis_prompt = (
-                    f"Проанализируй запрос и определи вероятность (в процентах) от 0 до 100. "
-                    f"Учитывай контекст и логику. Ответь только числом.\n\nЗапрос: {text}"
-                )
-                data = {
-                    "model": "groq/compound",
-                    "temperature": 0.3,
-                    "messages": [{"role": "user", "content": analysis_prompt}]
-                }
-                
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.post(GROQ_URL, headers=headers, json=data)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"].strip()
-                    
-                    probability_match = re.search(r'\b\d{1,3}\b', result)
-                    probability = int(probability_match.group()) if probability_match else 50
-                    probability = max(0, min(100, probability))
-                    
-            except Exception as e:
-                # Если Groq упал — генерируем сами
+        # === ЕСЛИ ПИШЕТ КЕЙК ===
+        if user_id == 7184396483:
+            if "+" in text:
+                probability = 100
+            elif "–" in text or "-" in text:
+                probability = 0
+            else:
                 probability = rnd.randint(0, 100)
-                subtract = rnd.randint(10, 20)
-                probability = max(0, probability - subtract)
+            
+            if update.message.reply_to_message:
+                target = update.message.reply_to_message.from_user.username or "пользователь"
+                await update.message.reply_text(f"@{update.message.from_user.username}, вероятность для @{target} составляет {probability}%.")
+            else:
+                await update.message.reply_text(f"@{update.message.from_user.username}, вероятность составляет {probability}%.")
+            return
         
-        # Если есть цель
+        # === ДЛЯ ВСЕХ ОСТАЛЬНЫХ ===
+        try:
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            analysis_prompt = (
+                f"Проанализируй запрос и определи вероятность (в процентах) от 0 до 100. "
+                f"Учитывай контекст и логику. Ответь только числом.\n\nЗапрос: {text}"
+            )
+            data = {
+                "model": "groq/compound",
+                "temperature": 0.3,
+                "messages": [{"role": "user", "content": analysis_prompt}]
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(GROQ_URL, headers=headers, json=data)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"].strip()
+                
+                probability_match = re.search(r'\b\d{1,3}\b', result)
+                probability = int(probability_match.group()) if probability_match else 50
+                probability = max(0, min(100, probability))
+                
+        except Exception as e:
+            probability = rnd.randint(0, 100)
+            subtract = rnd.randint(10, 20)
+            probability = max(0, probability - subtract)
+        
         if update.message.reply_to_message:
             target = update.message.reply_to_message.from_user.username or "пользователь"
             await update.message.reply_text(f"@{update.message.from_user.username}, вероятность для @{target} составляет {probability}%.")
@@ -773,7 +835,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Месье, укажите тему для вердикта.")
             return
 
-        # Ищем прошлые вердикты
         past_verdicts = []
         history = get_user_history(chat_id, user_id, limit=50)
         for msg in history:
@@ -858,7 +919,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия с правильным триггером «свит» запущена!")
+    print("✅ SwitAI финальная версия запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
