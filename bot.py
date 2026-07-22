@@ -646,11 +646,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_type in ["group", "supergroup"]:
         add_to_history(chat_id, user_id, "user", text)
     
-    # === ПРОВЕРКА УПОМИНАНИЯ ===
+    # === ПРОВЕРКА УПОМИНАНИЯ (ТОЛЬКО ЕСЛИ НЕТ «СВИТ») ===
     if chat_type in ["group", "supergroup"]:
-        if context.bot.username.lower() not in text.lower():
-            if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
-                return
+        if not re.search(r"\b(свит|Свит)\b", text):
+            if context.bot.username.lower() not in text.lower():
+                if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
+                    return
     
     # === ТРИГГЕР НА «СВИТ» ===
     if re.search(r"\b(свит|Свит)\b", text):
@@ -658,13 +659,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if question:
             user_mention = f"@{update.message.from_user.username}" if update.message.from_user.username else "Пользователь"
             
-            # === 1. Вопрос о боте ===
-            if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
-                reply = f"{user_mention}, я — SwitAI, месье! Чем могу помочь?"
-                await update.message.reply_text(reply)
-                return
-            
-            # === 2. Вердикт с таймером ===
+            # === 1. Вердикт (в приоритете) ===
             if re.search(r"вердикт", question, re.IGNORECASE):
                 topic = re.sub(r"вердикт\s*", "", question, flags=re.IGNORECASE).strip()
                 if not topic:
@@ -681,7 +676,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "Напишите *нет* или ничего — чтобы отменить."
                 )
                 
-                # Запускаем таймер на удаление через 15 секунд
+                # Запускаем таймер
                 async def delete_after_delay():
                     await asyncio.sleep(15)
                     if user_id in verdict_request:
@@ -692,6 +687,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             pass
                 
                 asyncio.create_task(delete_after_delay())
+                return
+            
+            # === 2. Вопрос о боте ===
+            if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
+                reply = f"{user_mention}, я — SwitAI, месье! Чем могу помочь?"
+                await update.message.reply_text(reply)
                 return
             
             # === 3. Вероятность ===
@@ -767,7 +768,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Напишите *нет* или ничего — чтобы отменить."
         )
         
-        # Запускаем таймер на удаление через 15 секунд
+        # Запускаем таймер
         async def delete_after_delay():
             await asyncio.sleep(15)
             if user_id in verdict_request:
@@ -926,7 +927,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    print("✅ SwitAI финальная версия с таймером вердикта запущена!")
+    print("✅ SwitAI финальная версия запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
