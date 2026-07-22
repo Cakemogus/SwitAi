@@ -311,7 +311,7 @@ FOOTBALL_TRIGGERS = {
 }
 
 # === ТАЙВАНЬ ===
-TAIWAN_TRIGGER = "🇨🇳 你在开玩笑吗？ (Ты шутишь?)"
+TAIWAN_TRIGGER = "🇨🇳 你在开玩笑吗? "
 
 # === МАТ ===
 MAT_KEYWORDS = [
