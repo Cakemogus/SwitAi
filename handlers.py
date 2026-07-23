@@ -4,7 +4,7 @@ import httpx
 import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
-from config import GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL
+from config import GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL, OLLAMA_API_KEYS
 from utils import (
     split_text, is_admin, get_rp_month, contains_mate,
     is_dangerous_request, detect_prompt_injection
@@ -24,8 +24,52 @@ verdict_request = {}
 filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
+ollama_key_index = 0
 
-# === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА ПО РОЛИ ===
+# === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА OLLAMA (РОТАЦИЯ) ===
+def get_next_ollama_key():
+    global ollama_key_index
+    key = OLLAMA_API_KEYS[ollama_key_index]
+    ollama_key_index = (ollama_key_index + 1) % len(OLLAMA_API_KEYS)
+    return key
+
+# === ПОИСК В ИНТЕРНЕТЕ ЧЕРЕЗ OLLAMA ===
+async def search_web(query: str) -> str:
+    try:
+        api_key = get_next_ollama_key()
+        headers = {"Authorization": f"Bearer {api_key}"}
+        data = {"query": query, "max_results": 3}
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://ollama.com/api/web_search",
+                headers=headers,
+                json=data
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            
+            if not results:
+                return "🔍 Ничего не найдено."
+            
+            output = []
+            for r in results[:3]:
+                output.append(f"• {r.get('title', 'Без заголовка')}\n  {r.get('content', '')[:200]}...\n  Источник: {r.get('url', '')}")
+            
+            return "\n\n".join(output)
+    except Exception as e:
+        return f"❌ Ошибка поиска: {str(e)}"
+
+# === ФУНКЦИЯ ВЫБОРА МОДЕЛИ ===
+def needs_internet(prompt: str) -> bool:
+    keywords = [
+        "найди", "поищи", "курс", "новости", "погода", 
+        "сколько сейчас", "актуальный", "последние", "сегодня",
+        "курс доллара", "курс евро", "цена", "стоимость", "биткоин"
+    ]
+    return any(word in prompt.lower() for word in keywords)
+
+# === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА GROQ ПО РОЛИ ===
 def get_key_for_task(task_type: str):
     role = ROLES.get(task_type)
     if role is None:
@@ -50,6 +94,14 @@ def get_joke_by_command(command: str) -> str:
         if re.search(key, command, re.IGNORECASE):
             return random.choice(jokes)
     return None
+
+# === ВЕРДИКТ (БЕЗ ТАЙМЕРА) ===
+async def start_verdict(update, user_id, topic, chat_id):
+    verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
+    await update.message.reply_text(
+        f"📝 Хотите получить вердикт по теме: *{topic}*?\n\n"
+        "Напишите *да* или *нет*."
+    )
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -79,6 +131,11 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE):
         return random.choice(DARK_JOKES)
 
+    # === ЕСЛИ НУЖЕН ИНТЕРНЕТ ===
+    if needs_internet(prompt):
+        search_result = await search_web(prompt)
+        return f"🌐 *Результаты поиска:*\n\n{search_result}"
+
     # === ИСТОРИЯ ===
     add_to_history(chat_id, user_id, "user", prompt)
     history_needed = any(word in prompt.lower() for word in ["помнишь", "говорил", "про", "о", "вернись", "что я", "расскажи про", "напомни"])
@@ -98,7 +155,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         messages.append({"role": msg['role'], "content": msg['content']})
     messages.append({"role": "user", "content": prompt})
 
-    # === ВЫБОР КЛЮЧА ===
+    # === ВЫБОР КЛЮЧА GROQ ===
     api_key = get_key_for_task(task_type)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -164,11 +221,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
                     return
 
-    # ============================================================
-    # === УПРОЩЁННЫЙ ВЕРДИКТ (БЕЗ ТАЙМЕРА) ===
-    # ============================================================
-    
-    # === 1. ОБРАБОТКА ОТВЕТА НА ВЕРДИКТ (ДА/НЕТ) ===
+    # === ОБРАБОТКА ОТВЕТА НА ВЕРДИКТ (ДА/НЕТ) ===
     if user_id in verdict_request:
         if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
             data = verdict_request[user_id]
@@ -219,18 +272,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⏳ Ответьте *да* или *нет*.")
             return
 
-    # === 2. ЗАПРОС ВЕРДИКТА ===
+    # === ЗАПРОС ВЕРДИКТА ===
     if re.search(r"вердикт", text, re.IGNORECASE):
         topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
         if not topic:
             await update.message.reply_text("❌ Укажите тему для вердикта.")
             return
-        
-        verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
-        await update.message.reply_text(
-            f"📝 Хотите получить вердикт по теме: *{topic}*?\n\n"
-            "Напишите *да* или *нет*."
-        )
+        await start_verdict(update, user_id, topic, chat_id)
         return
 
     # === ТРИГГЕР «СВИТ» ===
@@ -239,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if question:
             user_mention = f"@{update.message.from_user.username}" if update.message.from_user.username else "Пользователь"
             
-            # Вопрос о боте (случайные ответы)
+            # Вопрос о боте
             if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
                 import random as rnd
                 bot_responses = [
