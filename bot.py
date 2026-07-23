@@ -1,12 +1,11 @@
 import os
 import asyncio
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from flask import Flask
 from threading import Thread
 
-# === ИМПОРТЫ ИЗ МОДУЛЕЙ ===
 from config import BOT_TOKEN
-from handlers import handle_message, verdict_buttons
+from handlers import handle_message
 from commands import (
     menu_command, exit_admin_command, debug_command,
     clear_memory_command, clear_all_memory_command,
@@ -19,7 +18,6 @@ from commands import (
     save_chat_command, say_chat_command, list_chats_command, remove_chat_command
 )
 
-# === МИКРО-СЕРВЕР ДЛЯ RENDER ===
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -30,32 +28,23 @@ def health_check():
 def run_web():
     app_web.run(host='0.0.0.0', port=10000)
 
-# === ЗАПУСК БОТА ===
 def main():
     if not BOT_TOKEN:
         print("❌ Не установлен BOT_TOKEN!")
         return
 
-    # Запускаем микро-сервер для пингов Render
     thread = Thread(target=run_web)
     thread.daemon = True
     thread.start()
 
-    # Создаём приложение Telegram
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # === ОБРАБОТЧИК СООБЩЕНИЙ ===
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # === ОБРАБОТЧИК КНОПОК ===
-    app.add_handler(CallbackQueryHandler(verdict_buttons))
-
-    # === КОМАНДЫ ДЛЯ ВСЕХ ===
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("about", about_command))
 
-    # === АДМИН-КОМАНДЫ ===
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("exit_admin", exit_admin_command))
     app.add_handler(CommandHandler("debug", debug_command))
@@ -80,8 +69,7 @@ def main():
     app.add_handler(CommandHandler("listchats", list_chats_command))
     app.add_handler(CommandHandler("removechat", remove_chat_command))
 
-    # === ЗАПУСК ===
-    print("✅ SwitAI финальная версия с кнопками запущена!")
+    print("✅ SwitAI финальная версия без кнопок запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
