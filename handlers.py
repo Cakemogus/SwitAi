@@ -388,7 +388,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_mention = f"@{update.message.from_user.username}" if update.message.from_user.username else "Пользователь"
             
             # Вопрос о боте
-            if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
+            if re.search(r"(кто ты)", question, re.IGNORECASE):
                 import random as rnd
                 bot_responses = [
                     f"{user_mention}, я — SwitAI, швейцарский ИИ. Чем помочь?",
