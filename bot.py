@@ -1,12 +1,12 @@
 import os
 import asyncio
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from flask import Flask
 from threading import Thread
 
 # === ИМПОРТЫ ИЗ МОДУЛЕЙ ===
 from config import BOT_TOKEN
-from handlers import handle_message
+from handlers import handle_message, verdict_buttons
 from commands import (
     menu_command, exit_admin_command, debug_command,
     clear_memory_command, clear_all_memory_command,
@@ -47,6 +47,9 @@ def main():
     # === ОБРАБОТЧИК СООБЩЕНИЙ ===
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # === ОБРАБОТЧИК КНОПОК ===
+    app.add_handler(CallbackQueryHandler(verdict_buttons))
+
     # === КОМАНДЫ ДЛЯ ВСЕХ ===
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("stats", stats_command))
@@ -78,7 +81,7 @@ def main():
     app.add_handler(CommandHandler("removechat", remove_chat_command))
 
     # === ЗАПУСК ===
-    print("✅ SwitAI финальная версия запущена!")
+    print("✅ SwitAI финальная версия с кнопками запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
