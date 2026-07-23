@@ -19,9 +19,11 @@ from triggers import (
 )
 
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
+bot_stopped = False
 verdict_request = {}
 filter_enabled = True
 bot_mode = "normal"
+admin_mode = {}
 
 # === МОДЕЛИ ДЛЯ РАЗНЫХ ЗАДАЧ ===
 MODELS = {
@@ -121,14 +123,13 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     history_needed = any(word in prompt.lower() for word in ["помнишь", "говорил", "про", "о", "вернись", "что я", "расскажи про", "напомни"])
     history = get_context_with_history(chat_id, user_id, prompt) if history_needed else []
 
-    # === СИСТЕМНЫЙ ПРОМПТ (С МЕМ-РЕЖИМОМ) ===
+    # === СИСТЕМНЫЙ ПРОМПТ ===
     system_prompt = (
         f"Ты — SwitAI, швейцарский ИИ. Сейчас {current_month}. "
         "Ты знаешь интернет-мемы и умеешь их использовать. "
-        "Если пользователь спрашивает про мем (например, 'кто такой ещкере', 'что такое 67', 'кто такая ещкере'), "
-        "отвечай в стиле этого мема — с иронией, юмором и отсылками. "
-        "Если это обычный вопрос — отвечай чётко, по делу, с лёгким швейцарским акцентом. "
-        "Не используй мат. Отличай мем-запрос от обычного."
+        "Если пользователь спрашивает про мем, отвечай в его стиле. "
+        "Если это не мем — просто дай нормальный ответ. "
+        "Говори с лёгким акцентом, без 'месье' и 'уважаемый'."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -163,7 +164,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
 
 # === ОБРАБОТЧИК СООБЩЕНИЙ ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_stopped, verdict_request
+    global bot_stopped, verdict_request, admin_mode
 
     if not update.message or not update.message.text:
         return
