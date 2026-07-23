@@ -30,8 +30,7 @@ def get_model_and_search(prompt: str) -> tuple:
     internet_keywords = [
         "найди", "поищи", "курс", "новости", "погода", 
         "сколько сейчас", "актуальный", "последние", "сегодня",
-        "курс доллара", "курс евро", "цена", "стоимость", "биткоин",
-        "какой сейчас", "что происходит", "последние новости"
+        "курс доллара", "курс евро", "цена", "стоимость", "биткоин"
     ]
     
     if any(word in prompt.lower() for word in internet_keywords):
@@ -65,7 +64,7 @@ def get_joke_by_command(command: str) -> str:
             return random.choice(jokes)
     return None
 
-# === ТАЙМЕР ДЛЯ ВЕРДИКТА (БЕЗ РЕДАКТИРОВАНИЯ) ===
+# === ТАЙМЕР ДЛЯ ВЕРДИКТА (БЕЗ БЛОКИРОВКИ) ===
 async def start_verdict_timer(update, user_id, topic, chat_id):
     verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
     
@@ -75,8 +74,12 @@ async def start_verdict_timer(update, user_id, topic, chat_id):
         "Напишите *нет* или ничего — чтобы отменить."
     )
     
-    # Просто ждём 15 секунд
-    await asyncio.sleep(15)
+    # Ждём 15 секунд, но НЕ БЛОКИРУЕМ бота
+    for i in range(15):
+        await asyncio.sleep(1)
+        # Проверяем, не ответил ли пользователь
+        if user_id not in verdict_request:
+            return  # пользователь ответил — выходим
     
     # Если пользователь не ответил — удаляем сообщение
     if user_id in verdict_request:
@@ -147,7 +150,6 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "messages": messages
     }
 
-    # === ВКЛЮЧАЕМ ПОИСК, ЕСЛИ НУЖНО ===
     if search_enabled:
         data["search_enable"] = True
 
