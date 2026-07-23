@@ -21,12 +21,6 @@ GROQ_API_KEYS = [
     os.getenv("GROQ_API_KEY_12"),
 ]
 
-# === КЛЮЧИ OLLAMA (для интернет-поиска) ===
-OLLAMA_API_KEYS = [
-    os.getenv("OLLAMA_API_KEY_1"),
-    os.getenv("OLLAMA_API_KEY_2")
-]
-
 # === РОЛИ КЛЮЧЕЙ GROQ ===
 ROLES = {
     "history_manager": 0,
@@ -36,6 +30,25 @@ ROLES = {
     "fun": 9,
     "backup": [10, 11]
 }
+
+# === КЛЮЧИ OLLAMA (интернет-поиск) ===
+OLLAMA_API_KEYS = [
+    os.getenv("OLLAMA_API_KEY_1"),
+    os.getenv("OLLAMA_API_KEY_2")
+]
+
+# === КЛЮЧИ GEMINI ===
+# 2 ключа для генерации картинок
+GEMINI_GENERATE_KEYS = [
+    os.getenv("GEMINI_GENERATE_KEY_1"),
+    os.getenv("GEMINI_GENERATE_KEY_2")
+]
+
+# 2 ключа для распознавания картинок (Vision)
+GEMINI_VISION_KEYS = [
+    os.getenv("GEMINI_VISION_KEY_1"),
+    os.getenv("GEMINI_VISION_KEY_2")
+]
 
 # === ТВОИ ДАННЫЕ ===
 ADMIN_ID = 7184396483
