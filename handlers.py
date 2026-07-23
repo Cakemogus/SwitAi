@@ -2,8 +2,8 @@ import random
 import re
 import httpx
 import asyncio
-from telegram import Update
-from telegram.ext import ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, CallbackQueryHandler
 from config import GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL
 from utils import (
     split_text, is_admin, get_rp_month, contains_mate,
@@ -27,7 +27,6 @@ admin_mode = {}
 
 # === ФУНКЦИЯ ВЫБОРА МОДЕЛИ (ГИБРИД) ===
 def get_model_and_search(prompt: str) -> tuple:
-    # Ключевые слова, которые требуют интернета
     internet_keywords = [
         "найди", "поищи", "курс", "новости", "погода", 
         "сколько сейчас", "актуальный", "последние", "сегодня",
@@ -35,9 +34,9 @@ def get_model_and_search(prompt: str) -> tuple:
     ]
     
     if any(word in prompt.lower() for word in internet_keywords):
-        return "groq/compound", True  # с интернетом
+        return "groq/compound", True
     else:
-        return "llama-3.3-70b-versatile", False  # без интернета
+        return "llama-3.3-70b-versatile", False
 
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА ПО РОЛИ ===
 def get_key_for_task(task_type: str):
@@ -65,24 +64,33 @@ def get_joke_by_command(command: str) -> str:
             return random.choice(jokes)
     return None
 
-# === ТАЙМЕР ДЛЯ ВЕРДИКТА ===
+# === ТАЙМЕР ДЛЯ ВЕРДИКТА С КНОПКАМИ ===
 async def start_verdict_timer(update, user_id, topic, chat_id):
     verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
     
+    # === КНОПКИ ===
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да", callback_data="verdict_yes"),
+            InlineKeyboardButton("❌ Нет", callback_data="verdict_no")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     msg = await update.message.reply_text(
-        f"⏳ Осталось **15** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\\n\\n"
-        "Напишите *да* или *нет*."
+        f"⏳ Осталось **15** секунд, чтобы подтвердить вердикт по теме: *{topic}*.",
+        reply_markup=reply_markup
     )
     
     for remaining in range(14, -1, -1):
         await asyncio.sleep(1)
-        # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ УЖЕ ОТВЕТИЛ — ПРЕРЫВАЕМ ТАЙМЕР ===
+        # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ УЖЕ НАЖАЛ КНОПКУ — ПРЕРЫВАЕМ ===
         if user_id not in verdict_request:
             return
         try:
             await msg.edit_text(
-                f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\\n\\n"
-                "Напишите *да* или *нет*."
+                f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.",
+                reply_markup=reply_markup
             )
         except:
             pass
@@ -96,6 +104,65 @@ async def start_verdict_timer(update, user_id, topic, chat_id):
             await msg.delete()
         except:
             pass
+
+# === ОБРАБОТЧИК КНОПОК ===
+async def verdict_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if user_id not in verdict_request:
+        await query.edit_message_text("❌ Запрос на вердикт уже не актуален.")
+        return
+    
+    if data == "verdict_yes":
+        request_data = verdict_request[user_id]
+        del verdict_request[user_id]
+        
+        chat_id = request_data['chat_id']
+        topic = request_data['topic']
+        
+        # Ищем прошлые вердикты
+        past_verdicts = []
+        history = get_user_history(chat_id, user_id, limit=50)
+        for msg in history:
+            if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
+                past_verdicts.append(msg['content'])
+
+        api_key = get_key_for_task("verdict")
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        verdict_prompt = (
+            f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
+            f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
+            + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
+            + "\n\nВыдай структурированный ответ:\n"
+            "📌 Тема: ...\n"
+            "📊 Текущий вердикт: ...\n"
+            "📈 Сравнение с прошлым: ...\n"
+            "🎯 Прогноз: ...\n"
+            "🛡️ Рекомендация: ...\n"
+            "💡 Плюсы: ...\n"
+            "⚠️ Минусы: ..."
+        )
+        data = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.3,
+            "messages": [{"role": "user", "content": verdict_prompt}]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(GROQ_URL, headers=headers, json=data)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"]
+                await query.edit_message_text(f"📊 *Вердикт SwitAI:*\n\n{result}")
+        except Exception as e:
+            await query.edit_message_text(f"❌ SwitAI в шоке: {str(e)}")
+            
+    elif data == "verdict_no":
+        del verdict_request[user_id]
+        await query.edit_message_text("❌ Вердикт отменён.")
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -158,7 +225,6 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "messages": messages
     }
 
-    # Если нужен поиск — включаем
     if search_enabled:
         data["search_enable"] = True
 
@@ -307,57 +373,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await start_verdict_timer(update, user_id, topic, chat_id)
         return
-
-    # === ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ ===
-    if user_id in verdict_request:
-        if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
-            data = verdict_request[user_id]
-            del verdict_request[user_id]
-            
-            topic = data['topic']
-            past_verdicts = []
-            history = get_user_history(chat_id, user_id, limit=50)
-            for msg in history:
-                if "вердикт" in msg['content'].lower() and topic.lower() in msg['content'].lower():
-                    past_verdicts.append(msg['content'])
-
-            api_key = get_key_for_task("verdict")
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            verdict_prompt = (
-                f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
-                f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
-                + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
-                + "\n\nВыдай структурированный ответ:\n"
-                "📌 Тема: ...\n"
-                "📊 Текущий вердикт: ...\n"
-                "📈 Сравнение с прошлым: ...\n"
-                "🎯 Прогноз: ...\n"
-                "🛡️ Рекомендация: ...\n"
-                "💡 Плюсы: ...\n"
-                "⚠️ Минусы: ..."
-            )
-            data = {
-                "model": "llama-3.3-70b-versatile",
-                "temperature": 0.3,
-                "messages": [{"role": "user", "content": verdict_prompt}]
-            }
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(GROQ_URL, headers=headers, json=data)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"]
-                    await update.message.reply_text(f"📊 *Вердикт SwitAI:*\n\n{result}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ SwitAI в шоке: {str(e)}")
-            return
-
-        elif re.search(r"^(нет|no|не|отмена|не надо)$", text, re.IGNORECASE):
-            del verdict_request[user_id]
-            await update.message.reply_text("❌ Вердикт отменён.")
-            return
-        else:
-            await update.message.reply_text("⏳ Ответьте *да* или *нет*.")
-            return
 
     # === ОБЫЧНЫЙ ОТВЕТ ===
     reply = await ask_switai(chat_id, user_id, text, task_type="general")
