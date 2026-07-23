@@ -36,4 +36,4 @@ ADMIN_USERNAME = "cakemogus"
 
 # === ДРУГИЕ НАСТРОЙКИ ===
 MAX_PROMPT_LENGTH = 8000   # было 2000
-MAX_HISTORY_MESSAGES = 10   # пока оставляем 10
+MAX_HISTORY_MESSAGES = 100   # было 10
