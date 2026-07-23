@@ -25,16 +25,19 @@ filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
 
-# === МОДЕЛИ ДЛЯ РАЗНЫХ ЗАДАЧ (БЕЗ SEARCH_ENABLE) ===
-MODELS = {
-    "general": "llama-3.3-70b-versatile",
-    "verdict": "llama-3.3-70b-versatile",
-    "history": "llama-3.3-70b-versatile",
-    "fun": "deepseek/deepseek-v4-flash:free",
-}
-
-def get_model_for_task(task_type: str) -> str:
-    return MODELS.get(task_type, "llama-3.3-70b-versatile")
+# === ФУНКЦИЯ ВЫБОРА МОДЕЛИ (ГИБРИД) ===
+def get_model_and_search(prompt: str) -> tuple:
+    # Ключевые слова, которые требуют интернета
+    internet_keywords = [
+        "найди", "поищи", "курс", "новости", "погода", 
+        "сколько сейчас", "актуальный", "последние", "сегодня",
+        "курс доллара", "курс евро", "цена", "стоимость"
+    ]
+    
+    if any(word in prompt.lower() for word in internet_keywords):
+        return "groq/compound", True  # с интернетом
+    else:
+        return "llama-3.3-70b-versatile", False  # без интернета
 
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА ПО РОЛИ ===
 def get_key_for_task(task_type: str):
@@ -67,20 +70,24 @@ async def start_verdict_timer(update, user_id, topic, chat_id):
     verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
     
     msg = await update.message.reply_text(
-        f"⏳ Осталось **15** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
+        f"⏳ Осталось **15** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\\n\\n"
         "Напишите *да* или *нет*."
     )
     
     for remaining in range(14, -1, -1):
         await asyncio.sleep(1)
+        # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ УЖЕ ОТВЕТИЛ — ПРЕРЫВАЕМ ТАЙМЕР ===
+        if user_id not in verdict_request:
+            return
         try:
             await msg.edit_text(
-                f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
+                f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\\n\\n"
                 "Напишите *да* или *нет*."
             )
         except:
             pass
     
+    # Если время вышло и ответа нет — удаляем
     if user_id in verdict_request:
         del verdict_request[user_id]
         try:
@@ -103,14 +110,14 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
             return "🔐 Швейцарский банк не взламывается."
 
     # === ТРИГГЕРЫ ===
+    if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
+        return random.choice(COUNTRY_TRIGGERS["слава китаю"])
+    
     if re.search(r"тайвань.*независим|независим.*тайвань", prompt, re.IGNORECASE):
         return TAIWAN_TRIGGER
     for name, response in FOOTBALL_TRIGGERS.items():
         if re.search(name, prompt, re.IGNORECASE):
             return response
-    for keyword, responses in COUNTRY_TRIGGERS.items():
-        if re.search(keyword, prompt, re.IGNORECASE):
-            return random.choice(responses)
 
     joke = get_joke_by_command(prompt)
     if joke:
@@ -129,6 +136,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "Ты знаешь интернет-мемы и умеешь их использовать. "
         "Если пользователь спрашивает про мем, отвечай в его стиле. "
         "Если это не мем — просто дай нормальный ответ. "
+        "Если ты искал информацию в интернете — указывай источники. "
         "Говори с лёгким акцентом, без 'месье' и 'уважаемый'."
     )
 
@@ -137,18 +145,22 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         messages.append({"role": msg['role'], "content": msg['content']})
     messages.append({"role": "user", "content": prompt})
 
-    # === ВЫБОР КЛЮЧА И МОДЕЛИ ===
+    # === ВЫБОР КЛЮЧА ===
     api_key = get_key_for_task(task_type)
-    model = get_model_for_task(task_type)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    # === ВЫБОР МОДЕЛИ (ГИБРИД) ===
+    model, search_enabled = get_model_and_search(prompt)
+    
     data = {
         "model": model,
         "temperature": 0.3,
         "messages": messages
     }
 
-    # === ПОИСК ОТКЛЮЧЁН, ЧТОБЫ НЕ БЫЛО 400 ===
-    # data["search_enable"] = True  # закомментировано
+    # Если нужен поиск — включаем
+    if search_enabled:
+        data["search_enable"] = True
 
     try:
         await asyncio.sleep(0.5)
@@ -221,9 +233,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await start_verdict_timer(update, user_id, topic, chat_id)
                 return
 
-            # Вопрос о боте
+            # Вопрос о боте (случайные ответы)
             if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
-                await update.message.reply_text(f"{user_mention}, я — SwitAI, швейцарский ИИ. Чем помочь?")
+                import random as rnd
+                bot_responses = [
+                    f"{user_mention}, я — SwitAI, швейцарский ИИ. Чем помочь?",
+                    f"{user_mention}, я здесь! Вопросы есть?",
+                    f"{user_mention}, я SwitAI — ваш личный швейцарский ИИ. Спрашивайте!",
+                    f"{user_mention}, я на связи! Если есть вопрос — задавайте.",
+                    f"{user_mention}, я всегда рядом. Просто напишите, что нужно.",
+                    f"{user_mention}, SwitAI слушает. Что у вас?",
+                    f"{user_mention}, я тут! Как могу быть полезен?",
+                    f"{user_mention}, швейцарский ИИ всегда готов помочь!",
+                    f"{user_mention}, я бот, но с душой. Чем могу помочь?",
+                    f"{user_mention}, SwitAI — ваш цифровой помощник. Вопрос?"
+                ]
+                await update.message.reply_text(rnd.choice(bot_responses))
                 return
 
             # Вероятность
@@ -269,7 +294,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"{user_mention}, я думаю, что случайный пользователь {question.replace('кто', '').strip()}")
                 return
 
-            # Остальное
+            # Остальное — через ИИ
             reply = await ask_switai(chat_id, user_id, question, task_type="general")
             await update.message.reply_text(f"{user_mention}, {reply}")
             return
