@@ -35,5 +35,5 @@ ADMIN_ID = 7184396483
 ADMIN_USERNAME = "cakemogus"
 
 # === ДРУГИЕ НАСТРОЙКИ ===
-MAX_PROMPT_LENGTH = 2000
-MAX_HISTORY_MESSAGES = 10
+MAX_PROMPT_LENGTH = 8000   # было 2000
+MAX_HISTORY_MESSAGES = 10   # пока оставляем 10
