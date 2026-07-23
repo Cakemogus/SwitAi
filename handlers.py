@@ -30,7 +30,8 @@ def get_model_and_search(prompt: str) -> tuple:
     internet_keywords = [
         "найди", "поищи", "курс", "новости", "погода", 
         "сколько сейчас", "актуальный", "последние", "сегодня",
-        "курс доллара", "курс евро", "цена", "стоимость"
+        "курс доллара", "курс евро", "цена", "стоимость", "биткоин",
+        "какой сейчас", "что происходит", "последние новости"
     ]
     
     if any(word in prompt.lower() for word in internet_keywords):
@@ -64,36 +65,23 @@ def get_joke_by_command(command: str) -> str:
             return random.choice(jokes)
     return None
 
-# === ТАЙМЕР ДЛЯ ВЕРДИКТА (ОБНОВЛЕНИЕ КАЖДЫЕ 3 СЕКУНДЫ) ===
+# === ТАЙМЕР ДЛЯ ВЕРДИКТА (БЕЗ РЕДАКТИРОВАНИЯ) ===
 async def start_verdict_timer(update, user_id, topic, chat_id):
     verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
     
     msg = await update.message.reply_text(
-        f"⏳ Осталось **15** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
-        "Напишите *да* или *нет*."
+        f"⏳ Подтвердите вердикт по теме: *{topic}*.\n\n"
+        "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
+        "Напишите *нет* или ничего — чтобы отменить."
     )
     
-    for remaining in range(14, -1, -1):
-        await asyncio.sleep(1)
-        # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ УЖЕ ОТВЕТИЛ — ПРЕРЫВАЕМ ===
-        if user_id not in verdict_request:
-            return
-        # === РЕДАКТИРУЕМ ТОЛЬКО КАЖДЫЕ 3 СЕКУНДЫ ===
-        if remaining % 3 == 0 or remaining <= 3:
-            try:
-                await msg.edit_text(
-                    f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
-                    "Напишите *да* или *нет*."
-                )
-            except:
-                pass
+    # Просто ждём 15 секунд
+    await asyncio.sleep(15)
     
-    # Если время вышло и ответа нет — удаляем
+    # Если пользователь не ответил — удаляем сообщение
     if user_id in verdict_request:
         del verdict_request[user_id]
         try:
-            await msg.edit_text("⌛ Время вышло. Вердикт отменён.")
-            await asyncio.sleep(2)
             await msg.delete()
         except:
             pass
@@ -159,6 +147,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "messages": messages
     }
 
+    # === ВКЛЮЧАЕМ ПОИСК, ЕСЛИ НУЖНО ===
     if search_enabled:
         data["search_enable"] = True
 
