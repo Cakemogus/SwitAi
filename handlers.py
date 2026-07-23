@@ -25,10 +25,10 @@ filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
 
-# === МОДЕЛИ ДЛЯ РАЗНЫХ ЗАДАЧ ===
+# === МОДЕЛИ ДЛЯ РАЗНЫХ ЗАДАЧ (БЕЗ SEARCH_ENABLE) ===
 MODELS = {
     "general": "llama-3.3-70b-versatile",
-    "verdict": "groq/compound",
+    "verdict": "llama-3.3-70b-versatile",
     "history": "llama-3.3-70b-versatile",
     "fun": "deepseek/deepseek-v4-flash:free",
 }
@@ -147,9 +147,8 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "messages": messages
     }
 
-    # === ВКЛЮЧАЕМ ПОИСК ДЛЯ ВЕРДИКТОВ ===
-    if task_type in ["verdict", "general"]:
-        data["search_enable"] = True
+    # === ПОИСК ОТКЛЮЧЁН, ЧТОБЫ НЕ БЫЛО 400 ===
+    # data["search_enable"] = True  # закомментировано
 
     try:
         await asyncio.sleep(0.5)
@@ -237,7 +236,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         api_key = get_key_for_task("general")
                         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                         analysis_prompt = f"Проанализируй запрос и определи вероятность (в процентах) от 0 до 100. Учитывай контекст и логику. Ответь только числом.\n\nЗапрос: {question}"
-                        data = {"model": "groq/compound", "temperature": 0.3, "messages": [{"role": "user", "content": analysis_prompt}]}
+                        data = {"model": "llama-3.3-70b-versatile", "temperature": 0.3, "messages": [{"role": "user", "content": analysis_prompt}]}
                         async with httpx.AsyncClient(timeout=30.0) as client:
                             resp = await client.post(GROQ_URL, headers=headers, json=data)
                             resp.raise_for_status()
@@ -313,7 +312,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ Минусы: ..."
             )
             data = {
-                "model": "groq/compound",
+                "model": "llama-3.3-70b-versatile",
                 "temperature": 0.3,
                 "messages": [{"role": "user", "content": verdict_prompt}]
             }
