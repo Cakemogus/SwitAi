@@ -25,19 +25,6 @@ filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
 
-# === ФУНКЦИЯ ВЫБОРА МОДЕЛИ (ГИБРИД) ===
-def get_model_and_search(prompt: str) -> tuple:
-    internet_keywords = [
-        "найди", "поищи", "курс", "новости", "погода", 
-        "сколько сейчас", "актуальный", "последние", "сегодня",
-        "курс доллара", "курс евро", "цена", "стоимость", "биткоин"
-    ]
-    
-    if any(word in prompt.lower() for word in internet_keywords):
-        return "groq/compound", True
-    else:
-        return "llama-3.3-70b-versatile", False
-
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА ПО РОЛИ ===
 def get_key_for_task(task_type: str):
     role = ROLES.get(task_type)
@@ -63,31 +50,6 @@ def get_joke_by_command(command: str) -> str:
         if re.search(key, command, re.IGNORECASE):
             return random.choice(jokes)
     return None
-
-# === ТАЙМЕР ДЛЯ ВЕРДИКТА (БЕЗ БЛОКИРОВКИ) ===
-async def start_verdict_timer(update, user_id, topic, chat_id):
-    verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
-    
-    msg = await update.message.reply_text(
-        f"⏳ Подтвердите вердикт по теме: *{topic}*.\n\n"
-        "Напишите *да* в течение 15 секунд, чтобы подтвердить.\n"
-        "Напишите *нет* или ничего — чтобы отменить."
-    )
-    
-    # Ждём 15 секунд, но НЕ БЛОКИРУЕМ бота
-    for i in range(15):
-        await asyncio.sleep(1)
-        # Проверяем, не ответил ли пользователь
-        if user_id not in verdict_request:
-            return  # пользователь ответил — выходим
-    
-    # Если пользователь не ответил — удаляем сообщение
-    if user_id in verdict_request:
-        del verdict_request[user_id]
-        try:
-            await msg.delete()
-        except:
-            pass
 
 # === ОСНОВНАЯ ФУНКЦИЯ ===
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -128,7 +90,6 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "Ты знаешь интернет-мемы и умеешь их использовать. "
         "Если пользователь спрашивает про мем, отвечай в его стиле. "
         "Если это не мем — просто дай нормальный ответ. "
-        "Если ты искал информацию в интернете — указывай источники. "
         "Говори с лёгким акцентом, без 'месье' и 'уважаемый'."
     )
 
@@ -141,18 +102,11 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     api_key = get_key_for_task(task_type)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    # === ВЫБОР МОДЕЛИ (ГИБРИД) ===
-    model, search_enabled = get_model_and_search(prompt)
-    
     data = {
-        "model": model,
+        "model": "llama-3.3-70b-versatile",
         "temperature": 0.3,
         "messages": messages
     }
-
-    # === ВКЛЮЧАЕМ ПОИСК ЧЕРЕЗ tools (исправлено!) ===
-    if search_enabled and model == "groq/compound":
-        data["tools"] = [{"type": "web_search"}]
 
     try:
         await asyncio.sleep(0.5)
@@ -211,9 +165,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
     # ============================================================
-    # === САМОЕ ВАЖНОЕ: ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ (ДА/НЕТ) ===
-    # === ДОЛЖНА БЫТЬ ПЕРВОЙ, ДО ВСЕХ ПРОВЕРОК НА СВИТ И ВЕРДИКТ ===
+    # === УПРОЩЁННЫЙ ВЕРДИКТ (БЕЗ ТАЙМЕРА) ===
     # ============================================================
+    
+    # === 1. ОБРАБОТКА ОТВЕТА НА ВЕРДИКТ (ДА/НЕТ) ===
     if user_id in verdict_request:
         if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
             data = verdict_request[user_id]
@@ -264,21 +219,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⏳ Ответьте *да* или *нет*.")
             return
 
+    # === 2. ЗАПРОС ВЕРДИКТА ===
+    if re.search(r"вердикт", text, re.IGNORECASE):
+        topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
+        if not topic:
+            await update.message.reply_text("❌ Укажите тему для вердикта.")
+            return
+        
+        verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
+        await update.message.reply_text(
+            f"📝 Хотите получить вердикт по теме: *{topic}*?\n\n"
+            "Напишите *да* или *нет*."
+        )
+        return
+
     # === ТРИГГЕР «СВИТ» ===
     if re.search(r"\b(свит|Свит)\b", text):
         question = re.sub(r"(свит|Свит)\s*", "", text, flags=re.IGNORECASE).strip()
         if question:
             user_mention = f"@{update.message.from_user.username}" if update.message.from_user.username else "Пользователь"
             
-            # Вердикт
-            if re.search(r"вердикт", question, re.IGNORECASE):
-                topic = re.sub(r"вердикт\s*", "", question, flags=re.IGNORECASE).strip()
-                if not topic:
-                    await update.message.reply_text(f"{user_mention}, укажите тему для вердикта.")
-                    return
-                await start_verdict_timer(update, user_id, topic, chat_id)
-                return
-
             # Вопрос о боте (случайные ответы)
             if re.search(r"(ты|тебя|твой|свит|бот|SwitAI)", question, re.IGNORECASE):
                 import random as rnd
@@ -344,15 +304,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply = await ask_switai(chat_id, user_id, question, task_type="general")
             await update.message.reply_text(f"{user_mention}, {reply}")
             return
-
-    # === ВЕРДИКТ БЕЗ «СВИТ» ===
-    if "вердикт" in text.lower():
-        topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
-        if not topic:
-            await update.message.reply_text("❌ Укажите тему для вердикта.")
-            return
-        await start_verdict_timer(update, user_id, topic, chat_id)
-        return
 
     # === ОБЫЧНЫЙ ОТВЕТ ===
     reply = await ask_switai(chat_id, user_id, text, task_type="general")
