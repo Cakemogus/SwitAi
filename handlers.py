@@ -218,7 +218,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
                     return
 
-    # === ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ (ДА/НЕТ) — СНАЧАЛА! ===
+    # ============================================================
+    # === САМОЕ ВАЖНОЕ: ОБРАБОТКА ОТВЕТА НА ПОДТВЕРЖДЕНИЕ (ДА/НЕТ) ===
+    # === ДОЛЖНА БЫТЬ ПЕРВОЙ, ДО ВСЕХ ПРОВЕРОК НА СВИТ И ВЕРДИКТ ===
+    # ============================================================
     if user_id in verdict_request:
         if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
             data = verdict_request[user_id]
