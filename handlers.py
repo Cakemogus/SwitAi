@@ -77,9 +77,8 @@ async def start_verdict_timer(update, user_id, topic, chat_id):
                 "Напишите *да* или *нет*."
             )
         except:
-            pass  # если сообщение уже удалили
+            pass
     
-    # Если время вышло — удаляем запрос
     if user_id in verdict_request:
         del verdict_request[user_id]
         try:
@@ -122,11 +121,14 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     history_needed = any(word in prompt.lower() for word in ["помнишь", "говорил", "про", "о", "вернись", "что я", "расскажи про", "напомни"])
     history = get_context_with_history(chat_id, user_id, prompt) if history_needed else []
 
-    # === СИСТЕМНЫЙ ПРОМПТ ===
+    # === СИСТЕМНЫЙ ПРОМПТ (С МЕМ-РЕЖИМОМ) ===
     system_prompt = (
         f"Ты — SwitAI, швейцарский ИИ. Сейчас {current_month}. "
-        f"Говори с лёгким акцентом, но без лишних слов. Отвечай чётко, по делу. "
-        f"Можешь пошутить, но не перебарщивай. Без мата."
+        "Ты знаешь интернет-мемы и умеешь их использовать. "
+        "Если пользователь спрашивает про мем (например, 'кто такой ещкере', 'что такое 67', 'кто такая ещкере'), "
+        "отвечай в стиле этого мема — с иронией, юмором и отсылками. "
+        "Если это обычный вопрос — отвечай чётко, по делу, с лёгким швейцарским акцентом. "
+        "Не используй мат. Отличай мем-запрос от обычного."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -181,7 +183,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === АДМИН-РЕЖИМ ===
     if chat_id in admin_mode and admin_mode[chat_id]:
-        if not is_admin(user_id, username):
+        if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
             del admin_mode[chat_id]
             await update.message.reply_text("❌ Доступ отозван.")
             return
