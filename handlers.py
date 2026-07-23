@@ -2,9 +2,14 @@ import random
 import re
 import httpx
 import asyncio
+import base64
+import os
 from telegram import Update
 from telegram.ext import ContextTypes
-from config import GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL, OLLAMA_API_KEYS
+from config import (
+    GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL,
+    OLLAMA_API_KEYS, GEMINI_VISION_KEYS, GEMINI_GENERATE_KEYS
+)
 from utils import (
     split_text, is_admin, get_rp_month, contains_mate,
     is_dangerous_request, detect_prompt_injection
@@ -25,12 +30,28 @@ filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
 ollama_key_index = 0
+gemini_vision_index = 0
+gemini_generate_index = 0
 
 # === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА OLLAMA (РОТАЦИЯ) ===
 def get_next_ollama_key():
     global ollama_key_index
     key = OLLAMA_API_KEYS[ollama_key_index]
     ollama_key_index = (ollama_key_index + 1) % len(OLLAMA_API_KEYS)
+    return key
+
+# === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА GEMINI VISION (РОТАЦИЯ) ===
+def get_next_vision_key():
+    global gemini_vision_index
+    key = GEMINI_VISION_KEYS[gemini_vision_index]
+    gemini_vision_index = (gemini_vision_index + 1) % len(GEMINI_VISION_KEYS)
+    return key
+
+# === ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА GEMINI GENERATE (РОТАЦИЯ) ===
+def get_next_generate_key():
+    global gemini_generate_index
+    key = GEMINI_GENERATE_KEYS[gemini_generate_index]
+    gemini_generate_index = (gemini_generate_index + 1) % len(GEMINI_GENERATE_KEYS)
     return key
 
 # === ПОИСК В ИНТЕРНЕТЕ ЧЕРЕЗ OLLAMA ===
@@ -59,6 +80,79 @@ async def search_web(query: str) -> str:
             return "\n\n".join(output)
     except Exception as e:
         return f"❌ Ошибка поиска: {str(e)}"
+
+# === РАСПОЗНАВАНИЕ ФОТОГРАФИЙ ЧЕРЕЗ GEMINI ===
+async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
+    keys = GEMINI_VISION_KEYS
+    last_error = None
+    
+    for key in keys:
+        if not key:
+            continue
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={key}"
+            
+            # Скачиваем картинку и кодируем в base64
+            async with httpx.AsyncClient() as client:
+                img_resp = await client.get(image_url)
+                img_base64 = base64.b64encode(img_resp.content).decode()
+            
+            data = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}
+                    ]
+                }]
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, json=data)
+                if resp.status_code == 200:
+                    result = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    return result
+                else:
+                    last_error = f"Status {resp.status_code}"
+                    continue
+        except Exception as e:
+            last_error = str(e)
+            continue
+    
+    return f"❌ Не получилось распознать картинку. Ошибка: {last_error}"
+
+# === ГЕНЕРАЦИЯ КАРТИНОК ЧЕРЕЗ GEMINI ===
+async def generate_image_with_gemini(prompt: str) -> str:
+    keys = GEMINI_GENERATE_KEYS
+    last_error = None
+    
+    for key in keys:
+        if not key:
+            continue
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={key}"
+            
+            data = {
+                "contents": [{
+                    "parts": [{"text": f"Сгенерируй изображение по запросу: {prompt}"}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.7
+                }
+            }
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, json=data)
+                if resp.status_code == 200:
+                    result = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    return result
+                else:
+                    last_error = f"Status {resp.status_code}"
+                    continue
+        except Exception as e:
+            last_error = str(e)
+            continue
+    
+    return f"❌ Не получилось сгенерировать картинку. Ошибка: {last_error}"
 
 # === ФУНКЦИЯ ВЫБОРА МОДЕЛИ ===
 def needs_internet(prompt: str) -> bool:
@@ -180,18 +274,17 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_stopped, verdict_request, admin_mode
 
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
     chat_id = update.message.chat.id
     chat_type = update.message.chat.type
-    text = update.message.text
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "Неизвестный"
 
     # === ОСТАНОВКА ===
     if bot_stopped:
-        if text.lower() == "/start":
+        if text and text.lower() == "/start":
             pass
         else:
             return
@@ -202,12 +295,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del admin_mode[chat_id]
             await update.message.reply_text("❌ Доступ отозван.")
             return
-        if text.lower() == "/exit_admin":
+        if text and text.lower() == "/exit_admin":
             del admin_mode[chat_id]
             await update.message.reply_text("✅ Режим администратора отключён.")
             return
         reply = await ask_switai(chat_id, user_id, text, task_type="general", no_filter=True)
         await update.message.reply_text(reply)
+        return
+
+    # === ОБРАБОТКА ФОТОГРАФИЙ (РАСПОЗНАВАНИЕ) ===
+    if update.message.photo:
+        await update.message.reply_text("📸 Анализирую изображение...")
+        try:
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            image_url = file.file_path
+            
+            result = await analyze_image_with_gemini(image_url)
+            await update.message.reply_text(f"🖼️ *Анализ изображения:*\n\n{result}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при анализе: {str(e)}")
+        return
+
+    # === ТЕКСТОВЫЕ СООБЩЕНИЯ ===
+    if not update.message.text:
+        return
+
+    text = update.message.text
+
+    # === ГЕНЕРАЦИЯ КАРТИНОК ===
+    if re.search(r"(свит|Свит).*(нарисуй|сгенерируй|создай|gen|generate)", text, re.IGNORECASE):
+        prompt = re.sub(r"(свит|Свит)\s*(нарисуй|сгенерируй|создай|gen|generate)\s*", "", text, flags=re.IGNORECASE).strip()
+        if not prompt:
+            await update.message.reply_text("❌ Укажите, что нужно нарисовать. Например: `свит нарисуй кота в шляпе`")
+            return
+        await update.message.reply_text("🎨 Генерирую изображение...")
+        result = await generate_image_with_gemini(prompt)
+        await update.message.reply_text(result)
         return
 
     # === СОХРАНЕНИЕ ИСТОРИИ ===
