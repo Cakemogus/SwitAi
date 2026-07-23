@@ -64,7 +64,7 @@ def get_joke_by_command(command: str) -> str:
             return random.choice(jokes)
     return None
 
-# === ТАЙМЕР ДЛЯ ВЕРДИКТА (БЕЗ КНОПОК) ===
+# === ТАЙМЕР ДЛЯ ВЕРДИКТА (ОБНОВЛЕНИЕ КАЖДЫЕ 3 СЕКУНДЫ) ===
 async def start_verdict_timer(update, user_id, topic, chat_id):
     verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
     
@@ -78,13 +78,15 @@ async def start_verdict_timer(update, user_id, topic, chat_id):
         # === ЕСЛИ ПОЛЬЗОВАТЕЛЬ УЖЕ ОТВЕТИЛ — ПРЕРЫВАЕМ ===
         if user_id not in verdict_request:
             return
-        try:
-            await msg.edit_text(
-                f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
-                "Напишите *да* или *нет*."
-            )
-        except:
-            pass
+        # === РЕДАКТИРУЕМ ТОЛЬКО КАЖДЫЕ 3 СЕКУНДЫ ===
+        if remaining % 3 == 0 or remaining <= 3:
+            try:
+                await msg.edit_text(
+                    f"⏳ Осталось **{remaining}** секунд, чтобы подтвердить вердикт по теме: *{topic}*.\n\n"
+                    "Напишите *да* или *нет*."
+                )
+            except:
+                pass
     
     # Если время вышло и ответа нет — удаляем
     if user_id in verdict_request:
