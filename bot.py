@@ -69,7 +69,7 @@ def main():
     app.add_handler(CommandHandler("listchats", list_chats_command))
     app.add_handler(CommandHandler("removechat", remove_chat_command))
 
-    print("✅ SwitAI финальная версия без кнопок запущена!")
+    print("✅ SwitAI финальная версия с интернетом запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
