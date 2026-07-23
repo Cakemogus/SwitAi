@@ -5,7 +5,7 @@ import json
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# === ВСЕ 12 API-КЛЮЧЕЙ ===
+# === ВСЕ 12 API-КЛЮЧЕЙ GROQ ===
 GROQ_API_KEYS = [
     os.getenv("GROQ_API_KEY_1"),
     os.getenv("GROQ_API_KEY_2"),
@@ -21,7 +21,13 @@ GROQ_API_KEYS = [
     os.getenv("GROQ_API_KEY_12"),
 ]
 
-# === РОЛИ КЛЮЧЕЙ ===
+# === КЛЮЧИ OLLAMA (для интернет-поиска) ===
+OLLAMA_API_KEYS = [
+    os.getenv("OLLAMA_API_KEY_1"),
+    os.getenv("OLLAMA_API_KEY_2")
+]
+
+# === РОЛИ КЛЮЧЕЙ GROQ ===
 ROLES = {
     "history_manager": 0,
     "general": [1, 2, 3],
