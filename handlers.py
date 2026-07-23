@@ -150,8 +150,9 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "messages": messages
     }
 
-    if search_enabled:
-        data["search_enable"] = True
+    # === ВКЛЮЧАЕМ ПОИСК ЧЕРЕЗ tools (исправлено!) ===
+    if search_enabled and model == "groq/compound":
+        data["tools"] = [{"type": "web_search"}]
 
     try:
         await asyncio.sleep(0.5)
