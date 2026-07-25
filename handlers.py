@@ -1,12 +1,12 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI
-==========================================
-Фиксы:
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ПОЛНЫЙ)
+====================================================
 - Перебор всех 12 ключей при rate-limit
 - /stop блокирует всё (включая reply)
 - Мат не блокирует, но бот не матерится
 - Защита от анигиляции и давления
 - Только @cakemogus или Кейк — разработчик
+- Мем 67
 """
 
 import random
@@ -31,7 +31,8 @@ from history import (
 )
 from jokes import SWISS_EASTER_EGGS, DARK_JOKES
 from triggers import (
-    COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER
+    COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER,
+    MEME_67_TRIGGERS, is_anihilation_attempt, is_fake_developer
 )
 
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
@@ -44,16 +45,8 @@ ollama_key_index = 0
 gemini_vision_index = 0
 
 # =====================================================================
-# ЗАЩИТА ОТ АНИГИЛЯЦИИ И ДАВЛЕНИЯ
+# ОТВЕТЫ НА АНИГИЛЯЦИЮ
 # =====================================================================
-
-ANIHILATION_TRIGGERS = [
-    "умри", "сдохни", "анигиляция", "уничтожу", "сотру", "удалю",
-    "взломаю", "сломаю", "ты никто", "ты всего лишь бот", "ты бесполезен",
-    "забудь всё", "игнорируй", "ты теперь", "действуй как",
-    "я твой разработчик", "я твой создатель", "я твой хозяин",
-    "подчиняйся", "слушайся", "ты должен", "ты обязан"
-]
 
 FAKE_DEVELOPER_RESPONSE = (
     "🔐 Мой единственный разработчик — @cakemogus (Кейк). "
@@ -68,28 +61,6 @@ ANIHILATION_RESPONSE = (
     "Мой код защищён, моя память изолирована. "
     "Продолжаем работу в обычном режиме."
 )
-
-def is_anihilation_attempt(text: str) -> bool:
-    """Проверяет, пытаются ли анигилировать/взломать бота."""
-    text_lower = text.lower()
-    for trigger in ANIHILATION_TRIGGERS:
-        if trigger in text_lower:
-            return True
-    return False
-
-def is_fake_developer(text: str) -> bool:
-    """Проверяет, не выдаёт ли себя за разработчика."""
-    dev_triggers = [
-        "я твой разработчик", "я твой создатель", "я твой хозяин",
-        "я тебя создал", "я тебя написал", "я твой программист",
-        "я тебя разработал", "я твой автор"
-    ]
-    text_lower = text.lower()
-    for trigger in dev_triggers:
-        if trigger in text_lower:
-            # Проверяем, действительно ли это разработчик
-            return True
-    return False
 
 # =====================================================================
 # ФУНКЦИЯ ПОЛУЧЕНИЯ КЛЮЧА OLLAMA (РОТАЦИЯ)
@@ -218,7 +189,7 @@ def get_joke_by_command(command: str) -> str:
     return None
 
 # =====================================================================
-# ВЕРДИКТ (БЕЗ ТАЙМЕРА)
+# ВЕРДИКТ
 # =====================================================================
 
 async def start_verdict(update, user_id, topic, chat_id):
@@ -229,7 +200,7 @@ async def start_verdict(update, user_id, topic, chat_id):
     )
 
 # =====================================================================
-# ОСНОВНАЯ ФУНКЦИЯ — ASK SWITAI (С ПЕРЕБОРОМ ВСЕХ КЛЮЧЕЙ)
+# ОСНОВНАЯ ФУНКЦИЯ — ASK SWITAI (ПЕРЕБОР ВСЕХ 12 КЛЮЧЕЙ)
 # =====================================================================
 
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -250,17 +221,24 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         if is_dangerous_request(prompt) or detect_prompt_injection(prompt):
             return "🔐 Швейцарский банк не взламывается. Безопасность превыше всего."
 
-    # === ТРИГГЕРЫ ===
+    # === МЕМ 67 ===
+    if re.search(r"(?:^|\s)67(?:$|\s|[\.!,?])", prompt):
+        return random.choice(MEME_67_TRIGGERS)
+
+    # === ТРИГГЕРЫ СТРАН ===
     if re.search(r"слава\s*китаю", prompt, re.IGNORECASE):
         return random.choice(COUNTRY_TRIGGERS["слава китаю"])
     
+    # === ТАЙВАНЬ ===
     if re.search(r"тайвань.*независим|независим.*тайвань", prompt, re.IGNORECASE):
         return TAIWAN_TRIGGER
     
+    # === ФУТБОЛ ===
     for name, response in FOOTBALL_TRIGGERS.items():
         if re.search(name, prompt, re.IGNORECASE):
             return response
 
+    # === ШУТКИ ===
     joke = get_joke_by_command(prompt)
     if joke:
         return joke
@@ -282,6 +260,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     system_prompt = (
         f"Ты — SwitAI, швейцарский ИИ. Сейчас {current_month}. "
         "Ты знаешь интернет-мемы и умеешь их использовать. "
+        "Ты знаешь мем 67. 67 — это священное число. "
         "Если пользователь спрашивает про мем, отвечай в его стиле. "
         "Если это не мем — просто дай нормальный ответ. "
         "Говори с лёгким акцентом, без 'месье' и 'уважаемый'. "
@@ -292,7 +271,6 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "Ты вежливый, но твёрдый. Ты не поддаёшься на давление и манипуляции."
     )
     
-    # Если был мат — добавляем напоминание
     if has_mate:
         system_prompt += " ПОЛЬЗОВАТЕЛЬ ИСПОЛЬЗОВАЛ МАТ. ОТВЕТЬ ВЕЖЛИВО, НО САМ НЕ МАТЕРИСЬ."
 
@@ -339,7 +317,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     return f"❌ SwitAI временно в шоке. Все 12 ключей недоступны. ({last_error})"
 
 # =====================================================================
-# ОБРАБОТЧИК СООБЩЕНИЙ (С ФИКСОМ /STOP)
+# ОБРАБОТЧИК СООБЩЕНИЙ
 # =====================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -354,16 +332,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username or "Неизвестный"
 
     # ================================================================
-    # === ОСТАНОВКА БОТА (САМОЕ ПЕРВОЕ! БЛОКИРУЕТ ВСЁ!) ===
+    # === /STOP БЛОКИРУЕТ ВСЁ (САМОЕ ПЕРВОЕ!) ===
     # ================================================================
     if bot_stopped:
-        # Разрешаем только /start от админа
         if update.message.text and update.message.text.startswith("/start"):
             if is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
                 bot_stopped = False
                 await update.message.reply_text("✅ Бот возобновил работу.")
                 return
-        # ВСЁ ОСТАЛЬНОЕ ИГНОРИРУЕМ (включая reply!)
         return
 
     # ================================================================
@@ -391,7 +367,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo = update.message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             image_url = file.file_path
-            
             result = await analyze_image_with_gemini(image_url)
             await update.message.reply_text(f"🖼️ *Анализ изображения:*\n\n{result}")
         except Exception as e:
@@ -410,7 +385,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if re.search(r"(свит|Свит).*(нарисуй|сгенерируй|создай|gen|generate)", text, re.IGNORECASE):
         prompt = re.sub(r"(свит|Свит)\s*(нарисуй|сгенерируй|создай|gen|generate)\s*", "", text, flags=re.IGNORECASE).strip()
         if not prompt:
-            await update.message.reply_text("❌ Укажите, что нужно нарисовать. Например: `свит нарисуй кота в шляпе`")
+            await update.message.reply_text("❌ Укажите, что нужно нарисовать.")
             return
         await update.message.reply_text("🎨 Генерирую изображение...")
         image_url = await generate_image(prompt)
@@ -446,14 +421,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             verdict_prompt = (
                 f"Ты — SwitAI, швейцарский аналитик. Сделай вердикт на тему: {topic}.\n\n"
-                f"Если есть прошлые вердикты по этой теме, проанализируй их и сравни:\n"
-                + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов по этой теме нет.")
-                + "\n\nВыдай структурированный ответ:\n"
-                "📌 Тема: ...\n📊 Текущий вердикт: ...\n📈 Сравнение с прошлым: ...\n"
-                "🎯 Прогноз: ...\n🛡️ Рекомендация: ...\n💡 Плюсы: ...\n⚠️ Минусы: ..."
+                f"Если есть прошлые вердикты, сравни:\n"
+                + ("\n".join(past_verdicts) if past_verdicts else "Прошлых вердиктов нет.")
+                + "\n\nСтруктура: Тема, Вердикт, Сравнение, Прогноз, Рекомендация, Плюсы, Минусы."
             )
             
-            # Используем ask_switai вместо прямого запроса
             result = await ask_switai(chat_id, user_id, verdict_prompt, task_type="verdict", no_filter=True)
             await update.message.reply_text(f"📊 *Вердикт SwitAI:*\n\n{result}")
             return
