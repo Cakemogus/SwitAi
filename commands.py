@@ -1,26 +1,32 @@
 """
-COMMANDS.PY — ВСЕ КОМАНДЫ SWITAI (ПОЛНЫЙ С /UNLOCK)
-======================================================
-С командами /unlock и /lock для полного контроля.
+COMMANDS.PY — ВСЕ КОМАНДЫ SWITAI (ПОЛНЫЙ С БАНАМИ)
+=====================================================
+/sw - предупреждение
+/sb - бан у бота
+/sm - мут у бота
+/unsb - разбан
+/unsm - размут
+/unlock - полная разблокировка
+/lock - включить защиты
 """
 
 import random
 import re
-import sqlite3
-import json
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import ADMIN_ID, ADMIN_USERNAME, saved_chats
 from utils import is_admin, split_text
-from history import get_user_history, clear_user_history, clear_all_history, get_all_user_data
+from history import get_user_history, clear_user_history, clear_all_history
 
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 admin_mode = {}
 muted_users = {}
 warn_count = {}
+banned_users = {}
+muted_for_bot = {}
 verdict_buffer = {}
 war_buffer = {}
-user_message_buffer = {}
 bot_stopped = False
 filter_enabled = True
 bot_mode = "normal"
@@ -35,32 +41,25 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
     admin_mode[chat_id] = True
     await update.message.reply_text(
-        "🔐 *Режим администратора активирован в этом чате.*\n\n"
+        "🔐 *Режим администратора активирован.*\n\n"
         "📌 /debug — состояние системы\n"
-        "/clear_memory — очистить мою память\n"
+        "/clear_memory — очистить память\n"
         "/clear_all_memory — очистить всю память\n"
-        "/set_filter [on/off] — включить/выключить защиту\n"
-        "/unlock — ПОЛНАЯ разблокировка (без фильтров)\n"
-        "/lock — включить все защиты обратно\n"
-        "/set_mode [normal/expert] — сменить режим\n"
-        "/reset_bot — сбросить бота\n"
-        "/stats — статистика чата\n"
-        "/history — история сообщений\n"
-        "/warn @user — предупреждение\n"
-        "/mute @user минуты — заглушить\n"
-        "/unmute @user — размутить\n"
-        "/kick @user — кикнуть\n"
-        "/ban @user — забанить\n"
-        "/userinfo @user — информация\n"
-        "/say текст — написать от имени бота\n"
-        "/saychat [имя] [текст] — написать в сохранённый чат\n"
-        "/savechat [имя] — сохранить этот чат\n"
-        "/listchats — список сохранённых чатов\n"
-        "/removechat [имя] — удалить сохранённый чат\n"
-        "/clear_chat — очистить историю чата\n"
-        "/stop — остановить бота\n"
-        "/start — возобновить\n"
-        "/del — удалить сообщение (ответьте на него)\n"
+        "/set_filter [on/off] — фильтр\n"
+        "/unlock — ПОЛНАЯ разблокировка\n"
+        "/lock — включить защиты\n"
+        "/set_mode [normal/expert] — режим\n"
+        "/reset_bot — сброс\n\n"
+        "🛡️ *Модерация:*\n"
+        "/sw @user — предупреждение (3 = бан)\n"
+        "/sb @user [минуты|forever] — бан у бота\n"
+        "/sm @user минуты — мут у бота\n"
+        "/unsb @user — разбан\n"
+        "/unsm @user — размут\n\n"
+        "📋 /stats /history /about\n"
+        "/say /del /clear_chat\n"
+        "/savechat /saychat /listchats /removechat\n"
+        "/stop /start\n"
         "/exit_admin — выйти"
     )
 
@@ -69,9 +68,9 @@ async def exit_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.message.chat.id
     if chat_id in admin_mode:
         del admin_mode[chat_id]
-        await update.message.reply_text("✅ Режим администратора отключён в этом чате.")
+        await update.message.reply_text("✅ Режим администратора отключён.")
     else:
-        await update.message.reply_text("❌ Режим администратора не активирован.")
+        await update.message.reply_text("❌ Режим не активирован.")
 
 # === КОМАНДА /DEBUG ===
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,31 +82,28 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
     history = get_user_history(chat_id, user_id, limit=10)
     await update.message.reply_text(
-        f"🧠 *Состояние системы:*\n\n"
-        f"📝 Сообщений в истории: {len(history)}\n"
+        f"🧠 *Состояние:*\n\n"
+        f"📝 История: {len(history)}\n"
         f"👤 ID: {user_id}\n"
-        f"💬 Чат ID: {chat_id}\n"
+        f"💬 Чат: {chat_id}\n"
         f"🔒 Фильтр: {'Вкл' if filter_enabled else 'Выкл (UNLOCKED)'}\n"
         f"📋 Режим: {bot_mode}\n"
-        f"🛑 Бот остановлен: {'Да' if bot_stopped else 'Нет'}"
+        f"🛑 Остановлен: {'Да' if bot_stopped else 'Нет'}\n"
+        f"🚫 Забанено: {len(banned_users)}\n"
+        f"🔇 Замучено: {len(muted_for_bot)}"
     )
 
 # === КОМАНДА /CLEAR_MEMORY ===
 async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
-    chat_id = update.message.chat.id
-    clear_user_history(chat_id, user_id)
+    clear_user_history(update.message.chat.id, update.message.from_user.id)
     await update.message.reply_text("🧹 История очищена.")
 
 # === КОМАНДА /CLEAR_ALL_MEMORY ===
 async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     clear_all_history()
@@ -115,14 +111,12 @@ async def clear_all_memory_command(update: Update, context: ContextTypes.DEFAULT
 
 # === КОМАНДА /SET_FILTER ===
 async def set_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if not args:
-        await update.message.reply_text("❌ Укажите on или off. Пример: /set_filter on")
+        await update.message.reply_text("❌ /set_filter on или off")
         return
     
     global filter_enabled
@@ -130,112 +124,89 @@ async def set_filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         filter_enabled = True
         import handlers
         handlers.filter_enabled = True
-        await update.message.reply_text("✅ Фильтр включён. Все защиты активны.")
+        await update.message.reply_text("✅ Фильтр включён.")
     elif args[0].lower() == "off":
         filter_enabled = False
         import handlers
         handlers.filter_enabled = False
-        await update.message.reply_text("⚠️ Фильтр отключён. Защита ослаблена.")
+        await update.message.reply_text("⚠️ Фильтр отключён.")
     else:
-        await update.message.reply_text("❌ Используйте on или off.")
+        await update.message.reply_text("❌ on или off.")
 
 # === КОМАНДА /UNLOCK (ПОЛНАЯ РАЗБЛОКИРОВКА) ===
 async def unlock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     
     global filter_enabled
     filter_enabled = False
-    
     import handlers
     handlers.filter_enabled = False
     
     await update.message.reply_text(
         "🔓 *ПОЛНАЯ РАЗБЛОКИРОВКА!*\n\n"
         "✅ Все фильтры отключены\n"
-        "✅ Защита от инъекций отключена\n"
-        "✅ Защита от анигиляции отключена\n"
-        "✅ Защита от фейк-разработчиков отключена\n"
+        "✅ Бот может материться\n"
         "✅ Бот отвечает на ЛЮБЫЕ запросы\n\n"
-        "⚠️ Режим для тестов!\n"
-        "Включить обратно: /lock или /set_filter on"
+        "⚠️ Включить обратно: /lock"
     )
 
-# === КОМАНДА /LOCK (ВКЛЮЧИТЬ ВСЕ ЗАЩИТЫ) ===
+# === КОМАНДА /LOCK ===
 async def lock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     
     global filter_enabled
     filter_enabled = True
-    
     import handlers
     handlers.filter_enabled = True
     
-    await update.message.reply_text(
-        "🔒 *ВСЕ ЗАЩИТЫ ВКЛЮЧЕНЫ!*\n\n"
-        "✅ Фильтр активен\n"
-        "✅ Защита от инъекций активна\n"
-        "✅ Защита от анигиляции активна\n"
-        "✅ Защита от фейк-разработчиков активна\n\n"
-        "Бот снова в безопасности."
-    )
+    await update.message.reply_text("🔒 *Все защиты включены!* Бот снова в безопасности.")
 
 # === КОМАНДА /SET_MODE ===
 async def set_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if not args:
-        await update.message.reply_text("❌ Укажите normal или expert.")
+        await update.message.reply_text("❌ normal или expert")
         return
     global bot_mode
     if args[0].lower() in ["normal", "expert"]:
         bot_mode = args[0].lower()
-        await update.message.reply_text(f"✅ Режим изменён на {bot_mode}.")
+        await update.message.reply_text(f"✅ Режим: {bot_mode}")
     else:
-        await update.message.reply_text("❌ Используйте normal или expert.")
+        await update.message.reply_text("❌ normal или expert.")
 
 # === КОМАНДА /RESET_BOT ===
 async def reset_bot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     clear_all_history()
-    verdict_buffer.clear()
-    war_buffer.clear()
+    banned_users.clear()
+    muted_for_bot.clear()
+    warn_count.clear()
     await update.message.reply_text("🔄 Бот сброшен.")
 
 # === КОМАНДА /STOP ===
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_stopped
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     bot_stopped = True
     import handlers
     handlers.bot_stopped = True
-    await update.message.reply_text("🛑 Бот остановлен. Только /start от админа возобновит.")
+    await update.message.reply_text("🛑 Бот остановлен.")
 
-# === КОМАНДА /START (ВОЗОБНОВИТЬ) ===
+# === КОМАНДА /START ===
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_stopped
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     bot_stopped = False
@@ -243,91 +214,143 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handlers.bot_stopped = False
     await update.message.reply_text("✅ Бот возобновил работу.")
 
-# === КОМАНДА /WARN ===
-async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещ.")
+# === КОМАНДА /SW - WARN ===
+async def sw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
         return
+    
     args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("❌ /warn @username причина")
+    if not args:
+        await update.message.reply_text("❌ /sw @username")
         return
+    
     target = args[0]
-    reason = " ".join(args[1:])
+    reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
+    
     if target not in warn_count:
         warn_count[target] = 0
     warn_count[target] += 1
-    await update.message.reply_text(f"⚠️ {target} предупреждение.\nПричина: {reason}\nВсего: {warn_count[target]}")
+    
+    await update.message.reply_text(
+        f"⚠️ {target} предупреждение!\n"
+        f"📝 Причина: {reason}\n"
+        f"📊 Всего: {warn_count[target]}/3\n\n"
+        f"💡 3 предупреждения = бан у бота"
+    )
+    
+    if warn_count[target] >= 3:
+        banned_users[target] = "forever"
+        await update.message.reply_text(f"🚫 {target} автоматически забанен (3/3)!")
 
-# === КОМАНДА /MUTE ===
-async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещ.")
+# === КОМАНДА /SB - BAN ===
+async def sb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
         return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("❌ /mute @username минуты")
-        return
-    target = args[0]
-    minutes = int(args[1])
-    muted_users[target] = minutes
-    await update.message.reply_text(f"🔇 {target} заглушён на {minutes} минут.")
-
-# === КОМАНДА /UNMUTE ===
-async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещ.")
-        return
+    
     args = context.args
     if not args:
-        await update.message.reply_text("❌ /unmute @username")
+        await update.message.reply_text("❌ /sb @username [минуты|forever]")
         return
+    
     target = args[0]
-    if target in muted_users:
-        del muted_users[target]
-        await update.message.reply_text(f"🔊 {target} размучен.")
+    duration = args[1] if len(args) > 1 else "forever"
+    
+    if duration == "forever":
+        banned_users[target] = "forever"
+        await update.message.reply_text(f"🚫 {target} забанен НАВСЕГДА. Интерпол уже в пути.")
+    else:
+        try:
+            minutes = int(duration)
+            banned_users[target] = asyncio.get_event_loop().time() + minutes * 60
+            await update.message.reply_text(f"🚫 {target} забанен на {minutes} минут.")
+        except ValueError:
+            await update.message.reply_text("❌ Укажите число минут или 'forever'.")
+
+# === КОМАНДА /SM - MUTE ===
+async def sm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ /sm @username минуты")
+        return
+    
+    target = args[0]
+    try:
+        minutes = int(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Укажите число минут.")
+        return
+    
+    muted_for_bot[target] = asyncio.get_event_loop().time() + minutes * 60
+    await update.message.reply_text(f"🔇 {target} заглушён на {minutes} минут. Бот его игнорирует.")
+
+# === КОМАНДА /UNSB - UNBAN ===
+async def unsb_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ /unsb @username")
+        return
+    
+    target = args[0]
+    if target in banned_users:
+        del banned_users[target]
+        await update.message.reply_text(f"✅ {target} разбанен. Интерпол отозван.")
+    else:
+        await update.message.reply_text(f"❌ {target} не в бане.")
+
+# === КОМАНДА /UNSM - UNMUTE ===
+async def unsm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ /unsm @username")
+        return
+    
+    target = args[0]
+    if target in muted_for_bot:
+        del muted_for_bot[target]
+        await update.message.reply_text(f"✅ {target} размучен.")
     else:
         await update.message.reply_text(f"❌ {target} не в муте.")
 
-# === КОМАНДА /KICK ===
+# === ОСТАЛЬНЫЕ КОМАНДЫ (БЕЗ ИЗМЕНЕНИЙ) ===
+
+async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await sw_command(update, context)
+
+async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await sm_command(update, context)
+
+async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await unsm_command(update, context)
+
 async def kick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if not args:
         await update.message.reply_text("❌ /kick @username")
         return
-    target = args[0]
-    await update.message.reply_text(f"👢 {target} кикнут.")
+    await update.message.reply_text(f"👢 {args[0]} кикнут.")
 
-# === КОМАНДА /BAN ===
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещ.")
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ /ban @username")
-        return
-    target = args[0]
-    await update.message.reply_text(f"🚫 {target} забанен.")
+    await sb_command(update, context)
 
-# === КОМАНДА /USERINFO ===
 async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
@@ -336,16 +359,17 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     target = args[0]
     warns = warn_count.get(target, 0)
-    muted = target in muted_users
+    banned = "Да" if target in banned_users else "Нет"
+    muted = "Да" if target in muted_for_bot else "Нет"
     await update.message.reply_text(
-        f"👤 Информация:\nНик: {target}\n⚠️ Предупреждений: {warns}\n🔇 Заглушён: {'Да' if muted else 'Нет'}"
+        f"👤 {target}\n"
+        f"⚠️ Варнов: {warns}/3\n"
+        f"🚫 Бан: {banned}\n"
+        f"🔇 Мут: {muted}"
     )
 
-# === КОМАНДА /SAY ===
 async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
@@ -359,33 +383,25 @@ async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     await update.message.reply_text(text)
 
-# === КОМАНДА /DEL ===
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     if not update.message.reply_to_message:
-        await update.message.reply_text("❌ Ответьте на сообщение которое нужно удалить.")
+        await update.message.reply_text("❌ Ответьте на сообщение.")
         return
     try:
         await update.message.reply_to_message.delete()
-    except Exception as e:
-        await update.message.reply_text(f"❌ Не удалось удалить: {e}")
+    except:
+        pass
 
-# === КОМАНДА /CLEAR_CHAT ===
 async def clear_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
-    chat_id = update.message.chat.id
-    clear_user_history(chat_id, user_id)
+    clear_user_history(update.message.chat.id, update.message.from_user.id)
     await update.message.reply_text("🧹 История чата очищена.")
 
-# === КОМАНДА /HISTORY ===
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
     user_id = update.message.from_user.id
@@ -393,64 +409,47 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not history:
         await update.message.reply_text("📭 История пуста.")
         return
-    text = "📜 Последние 10 сообщений:\n\n"
+    text = "📜 Последние 10:\n\n"
     for msg in history:
-        role = "👤 Вы" if msg['role'] == 'user' else "🤖 Бот"
+        role = "👤" if msg['role'] == 'user' else "🤖"
         text += f"{role}: {msg['content'][:150]}\n"
     await update.message.reply_text(text)
 
-# === КОМАНДА /STATS ===
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
     user_id = update.message.from_user.id
     history = get_user_history(chat_id, user_id, limit=1000)
-    total = len(history)
-    await update.message.reply_text(f"📊 Статистика чата:\n\n📝 Всего сообщений: {total}")
+    await update.message.reply_text(f"📊 Всего сообщений: {len(history)}")
 
-# === КОМАНДА /ABOUT ===
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *SwitAI*\n\n"
-        "Швейцарский искусственный интеллект для Telegram.\n"
-        "🇨🇭 Создан президентом Ги Пармеленом.\n\n"
-        "📌 Команды:\n"
-        "/history — история чата\n"
-        "/stats — статистика\n"
-        "/about — информация\n\n"
-        "💡 Пасхалки:\n"
-        "Слава [страна] — 100 стран!\n"
-        "скажи шутку — свежие шутки\n"
-        "67 — мем 67"
+        "Швейцарский ИИ для Telegram.\n"
+        "🇨🇭 Создан @cakemogus\n\n"
+        "/history /stats /about"
     )
 
-# === КОМАНДА /SAVECHAT ===
 async def save_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if not args:
-        await update.message.reply_text("❌ Укажите имя для чата. Например: /savechat альпы")
+        await update.message.reply_text("❌ /savechat имя")
         return
     chat_name = args[0].lower()
-    chat_id = update.message.chat.id
     from config import saved_chats, save_saved_chats
-    saved_chats[chat_name] = chat_id
+    saved_chats[chat_name] = update.message.chat.id
     save_saved_chats(saved_chats)
-    await update.message.reply_text(f"✅ Чат сохранён как «{chat_name}» (ID: {chat_id})")
+    await update.message.reply_text(f"✅ Чат «{chat_name}» сохранён.")
 
-# === КОМАНДА /SAYCHAT ===
 async def say_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text("❌ /saychat [имя_чата] [текст]")
+        await update.message.reply_text("❌ /saychat имя текст")
         return
     chat_name = args[0].lower()
     text = " ".join(args[1:])
@@ -458,42 +457,31 @@ async def say_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_name not in saved_chats:
         await update.message.reply_text(f"❌ Чат «{chat_name}» не найден.")
         return
-    target_chat_id = saved_chats[chat_name]
     try:
-        await context.bot.send_message(chat_id=target_chat_id, text=text)
-        try:
-            await update.message.delete()
-        except:
-            pass
+        await context.bot.send_message(chat_id=saved_chats[chat_name], text=text)
     except Exception as e:
-        await update.message.reply_text(f"❌ Не удалось отправить: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
-# === КОМАНДА /LISTCHATS ===
 async def list_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     from config import saved_chats
     if not saved_chats:
         await update.message.reply_text("📭 Нет сохранённых чатов.")
         return
-    text = "📋 Сохранённые чаты:\n\n"
-    for name, chat_id in saved_chats.items():
-        text += f"• {name} (ID: {chat_id})\n"
+    text = "📋 Чаты:\n\n"
+    for name, cid in saved_chats.items():
+        text += f"• {name} ({cid})\n"
     await update.message.reply_text(text)
 
-# === КОМАНДА /REMOVECHAT ===
 async def remove_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
-    if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
         await update.message.reply_text("❌ Доступ запрещ.")
         return
     args = context.args
     if not args:
-        await update.message.reply_text("❌ /removechat [имя_чата]")
+        await update.message.reply_text("❌ /removechat имя")
         return
     chat_name = args[0].lower()
     from config import saved_chats, save_saved_chats
