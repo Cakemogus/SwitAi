@@ -1,12 +1,12 @@
 """
-BOT.PY — SWITAI (ПОЛНЫЙ С /UNLOCK)
-=====================================
+BOT.PY — SWITAI (ПОЛНЫЙ С МОДЕРАЦИЕЙ)
+=========================================
 Швейцарский ИИ с 12 ключами Groq.
 Flask для Health Check.
+Новые команды: /sw, /sb, /sm, /unsb, /unsm
 """
 
 import os
-import asyncio
 from threading import Thread
 from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -18,6 +18,8 @@ from commands import (
     clear_memory_command, clear_all_memory_command,
     set_filter_command, set_mode_command, reset_bot_command,
     stop_command, start_command,
+    sw_command, sb_command, sm_command,
+    unsb_command, unsm_command,
     warn_command, mute_command, unmute_command,
     kick_command, ban_command, userinfo_command,
     say_command, del_command,
@@ -80,12 +82,23 @@ def main():
     app.add_handler(CommandHandler("reset_bot", reset_bot_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
+    
+    # Модерация (старые)
     app.add_handler(CommandHandler("warn", warn_command))
     app.add_handler(CommandHandler("mute", mute_command))
     app.add_handler(CommandHandler("unmute", unmute_command))
     app.add_handler(CommandHandler("kick", kick_command))
     app.add_handler(CommandHandler("ban", ban_command))
     app.add_handler(CommandHandler("userinfo", userinfo_command))
+    
+    # Модерация (новые префиксы /s)
+    app.add_handler(CommandHandler("sw", sw_command))
+    app.add_handler(CommandHandler("sb", sb_command))
+    app.add_handler(CommandHandler("sm", sm_command))
+    app.add_handler(CommandHandler("unsb", unsb_command))
+    app.add_handler(CommandHandler("unsm", unsm_command))
+    
+    # Утилиты
     app.add_handler(CommandHandler("say", say_command))
     app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("clear_chat", clear_chat_command))
@@ -94,7 +107,7 @@ def main():
     app.add_handler(CommandHandler("listchats", list_chats_command))
     app.add_handler(CommandHandler("removechat", remove_chat_command))
 
-    print("✅ SwitAI запущен!")
+    print("✅ SwitAI запущен с модерацией!")
     app.run_polling()
 
 if __name__ == "__main__":
