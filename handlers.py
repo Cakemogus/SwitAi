@@ -1,10 +1,10 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ С ЛОГАМИ)
-============================================================
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ)
+====================================================
 - /unlock отключает ВСЕ защиты
 - Мем 67 знает, но без триггера
 - 12 ключей Groq с перебором
-- Stable Diffusion с логами (SDXL → SD 2.1 → Pollinations)
+- Stable Diffusion v1.5 (надёжная) → SD 2.1 → Pollinations
 - /stop блокирует всё
 - Поиск фильтрует ТОЛЬКО детское
 - Генерация фильтрует ТОЛЬКО порно
@@ -128,61 +128,43 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
 
 async def generate_image(prompt: str) -> str:
     """
-    Генерация картинок с логами:
-    1. SDXL (с повторной попыткой при загрузке)
-    2. SD 2.1
-    3. Pollinations
+    Генерация картинок:
+    1. SD 1.5 (runwayml) — самая надёжная, всегда работает
+    2. SD 2.1 (stabilityai) — запасная
+    3. Pollinations — последний fallback
     """
     
-    # 1. SDXL
     if HF_TOKEN:
+        # 1. SD 1.5 — самая надёжная
         try:
-            logger.info(f"🎨 Пробую SDXL...")
-            enhanced = f"{prompt}, masterpiece, best quality, highly detailed, 4k"
-            url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+            logger.info(f"🎨 Пробую SD 1.5...")
+            url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {
-                "inputs": enhanced,
-                "parameters": {
-                    "negative_prompt": "blurry, low quality, ugly",
-                    "num_inference_steps": 25,
-                    "guidance_scale": 7.5,
-                    "width": 1024,
-                    "height": 1024
-                }
-            }
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
-                logger.info(f"🎨 SDXL статус: {resp.status_code}")
+                logger.info(f"🎨 SD 1.5 статус: {resp.status_code}")
                 
                 if resp.status_code == 200 and resp.content:
-                    logger.info(f"✅ SDXL сработал!")
+                    logger.info(f"✅ SD 1.5 сработал!")
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                         f.write(resp.content)
                         return f.name
-                
-                elif resp.status_code == 503:
-                    logger.info(f"⏳ SDXL загружается, жду 30 сек...")
-                    await asyncio.sleep(30)
-                    resp = await client.post(url, headers=headers, json=data)
-                    if resp.status_code == 200 and resp.content:
-                        logger.info(f"✅ SDXL сработал со второй попытки!")
-                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                            f.write(resp.content)
-                            return f.name
         except Exception as e:
-            logger.warning(f"❌ SDXL ошибка: {e}")
-    
-    # 2. SD 2.1
-    if HF_TOKEN:
+            logger.warning(f"❌ SD 1.5 ошибка: {e}")
+        
+        # 2. SD 2.1
         try:
             logger.info(f"🎨 Пробую SD 2.1...")
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
             data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
+            
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
                 logger.info(f"🎨 SD 2.1 статус: {resp.status_code}")
+                
                 if resp.status_code == 200 and resp.content:
                     logger.info(f"✅ SD 2.1 сработал!")
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
@@ -404,8 +386,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "порно", "porn", "xxx", "секс", "sex", "голые", "nude",
             "18+", "nsfw", "эротик", "hentai", "хентай", "трах",
             "член", "пенис", "вагина", "сиськи", "голая", "голый",
-            "раздет", "обнажен", "нюдс", "nudes", "милф", "milf",
-            "буккаке", "фетиш", "бдсм", "оргия", "гей", "лесби"
+            "раздет", "обнажен", "нюдс", "nudes", "милф", "milf"
         ]
         if any(word in prompt.lower() for word in nsfw_keywords):
             await update.message.reply_text(
