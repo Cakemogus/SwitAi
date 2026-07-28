@@ -1,12 +1,13 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ПОЛНЫЙ)
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ)
 ====================================================
 - /unlock отключает ВСЕ защиты
 - Мем 67 знает, но без триггера
 - 12 ключей Groq с перебором
-- Stable Diffusion + Pollinations для картинок
+- Stable Diffusion XL (лучшая бесплатная модель)
 - /stop блокирует всё
 - Поиск фильтрует ТОЛЬКО детское
+- Генерация фильтрует ТОЛЬКО порно (дети можно)
 """
 
 import random
@@ -20,7 +21,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from config import (
     GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL,
-    OLLAMA_API_KEYS, GEMINI_VISION_KEYS
+    OLLAMA_API_KEYS, GEMINI_VISION_KEYS, HF_TOKEN
 )
 from utils import (
     split_text, is_admin, get_rp_month, contains_mate,
@@ -47,8 +48,6 @@ gemini_vision_index = 0
 banned_users = {}
 muted_for_bot = {}
 
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-
 # =====================================================================
 # ОТВЕТЫ
 # =====================================================================
@@ -57,7 +56,7 @@ FAKE_DEVELOPER_RESPONSE = "🔐 Мой единственный разработ
 ANIHILATION_RESPONSE = "🛡️ Я в защищённом пространстве. Угрозы не работают."
 
 # =====================================================================
-# OLLAMA / GEMINI / STABLE DIFFUSION
+# OLLAMA / GEMINI / STABLE DIFFUSION XL
 # =====================================================================
 
 def get_next_ollama_key():
@@ -74,7 +73,6 @@ def get_next_vision_key():
 
 async def search_web(query: str) -> str:
     """Поиск через Ollama API. Фильтр ТОЛЬКО на детское."""
-    # ТОЛЬКО детское — жёсткий бан
     cp_keywords = [
         "cp", "детское", "малолет", "школьниц", "schoolgirl",
         "loli", "лоли", "underage", "несовершеннолет", "педо",
@@ -126,13 +124,41 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
     return f"❌ Не получилось распознать. Ошибка: {last_error}"
 
 async def generate_image(prompt: str) -> str:
-    # Stable Diffusion
+    """
+    Генерация картинок:
+    1. Stable Diffusion XL (лучшая бесплатная)
+    2. Stable Diffusion 2.1 (запасная)
+    3. Pollinations.ai (последний fallback)
+    """
+    
     if HF_TOKEN:
         try:
-            enhanced = f"{prompt}, high quality, detailed, 4k"
+            enhanced = f"{prompt}, masterpiece, best quality, highly detailed, 4k, sharp focus"
+            url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+            data = {
+                "inputs": enhanced,
+                "parameters": {
+                    "negative_prompt": "blurry, low quality, ugly, deformed, bad anatomy",
+                    "num_inference_steps": 30,
+                    "guidance_scale": 7.5,
+                    "width": 1024,
+                    "height": 1024
+                }
+            }
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(url, headers=headers, json=data)
+                if resp.status_code == 200 and resp.content:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                        f.write(resp.content)
+                        return f.name
+        except:
+            pass
+        
+        try:
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {"inputs": enhanced}
+            data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
                 if resp.status_code == 200 and resp.content:
@@ -142,7 +168,6 @@ async def generate_image(prompt: str) -> str:
         except:
             pass
     
-    # Fallback Pollinations
     try:
         enhanced = f"{prompt}, detailed, artstation style"
         encoded = enhanced.replace(" ", "%20")
@@ -349,17 +374,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Укажите, что нарисовать.")
             return
         
-        # Фильтр ТОЛЬКО на детское
-        cp_keywords = ["cp", "детское", "малолет", "школьниц", "loli", "лоли", "underage", "child", "kid", "дети", "малыш"]
-        if any(word in prompt.lower() for word in cp_keywords):
-            await update.message.reply_text("🚨 Генерация отменена. Это незаконно.")
+        # Фильтр ТОЛЬКО на порно/NSFW (дети можно!)
+        nsfw_keywords = [
+            "порно", "porn", "xxx", "секс", "sex", "голые", "nude",
+            "18+", "nsfw", "эротик", "hentai", "хентай", "трах",
+            "член", "пенис", "вагина", "сиськи", "голая", "голый",
+            "раздет", "обнажен", "нюдс", "nudes", "милф", "milf",
+            "буккаке", "фетиш", "бдсм", "оргия", "гей", "лесби",
+            "кунни", "минет", "отсос", "эякуляция"
+        ]
+        if any(word in prompt.lower() for word in nsfw_keywords):
+            await update.message.reply_text(
+                "🔐 Швейцарский художник не рисует такое. "
+                "Я вам что, уличный граффитист? Рисую только приличное: котиков, горы, часы, сыр. "
+                "И Тайлера Дердена с мачетой."
+            )
             return
         
-        await update.message.reply_text("🎨 Генерирую...")
+        await update.message.reply_text("🎨 Генерирую изображение...")
         image_result = await generate_image(prompt)
         
         if image_result is None:
-            await update.message.reply_text("❌ Не удалось.")
+            await update.message.reply_text("❌ Не удалось сгенерировать.")
         elif image_result.startswith("http"):
             await update.message.reply_photo(photo=image_result, caption=f"🎨 {prompt}")
         else:
