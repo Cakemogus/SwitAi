@@ -1,13 +1,13 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ)
-====================================================
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ С ЛОГАМИ)
+============================================================
 - /unlock отключает ВСЕ защиты
 - Мем 67 знает, но без триггера
 - 12 ключей Groq с перебором
-- Stable Diffusion XL → SD 2.1 → Pollinations
+- Stable Diffusion с логами (SDXL → SD 2.1 → Pollinations)
 - /stop блокирует всё
 - Поиск фильтрует ТОЛЬКО детское
-- Генерация фильтрует ТОЛЬКО порно (дети можно)
+- Генерация фильтрует ТОЛЬКО порно
 """
 
 import random
@@ -17,6 +17,7 @@ import asyncio
 import base64
 import os
 import tempfile
+import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import (
@@ -36,6 +37,8 @@ from triggers import (
     COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER,
     is_anihilation_attempt, is_fake_developer
 )
+
+logger = logging.getLogger(__name__)
 
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 bot_stopped = False
@@ -125,52 +128,71 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
 
 async def generate_image(prompt: str) -> str:
     """
-    Генерация картинок:
-    1. Stable Diffusion XL (основной)
-    2. Stable Diffusion 2.1 (запасной)
-    3. Pollinations.ai (последний fallback)
+    Генерация картинок с логами:
+    1. SDXL (с повторной попыткой при загрузке)
+    2. SD 2.1
+    3. Pollinations
     """
     
+    # 1. SDXL
     if HF_TOKEN:
-        # 1. SDXL
         try:
-            enhanced = f"{prompt}, masterpiece, best quality, highly detailed, 4k, sharp focus"
+            logger.info(f"🎨 Пробую SDXL...")
+            enhanced = f"{prompt}, masterpiece, best quality, highly detailed, 4k"
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
             data = {
                 "inputs": enhanced,
                 "parameters": {
-                    "negative_prompt": "blurry, low quality, ugly, deformed, bad anatomy",
-                    "num_inference_steps": 30,
+                    "negative_prompt": "blurry, low quality, ugly",
+                    "num_inference_steps": 25,
                     "guidance_scale": 7.5,
                     "width": 1024,
                     "height": 1024
                 }
             }
-            async with httpx.AsyncClient(timeout=90.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
+                logger.info(f"🎨 SDXL статус: {resp.status_code}")
+                
                 if resp.status_code == 200 and resp.content:
+                    logger.info(f"✅ SDXL сработал!")
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                         f.write(resp.content)
                         return f.name
-        except:
-            pass
-        
-        # 2. SD 2.1
+                
+                elif resp.status_code == 503:
+                    logger.info(f"⏳ SDXL загружается, жду 30 сек...")
+                    await asyncio.sleep(30)
+                    resp = await client.post(url, headers=headers, json=data)
+                    if resp.status_code == 200 and resp.content:
+                        logger.info(f"✅ SDXL сработал со второй попытки!")
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                            f.write(resp.content)
+                            return f.name
+        except Exception as e:
+            logger.warning(f"❌ SDXL ошибка: {e}")
+    
+    # 2. SD 2.1
+    if HF_TOKEN:
         try:
+            logger.info(f"🎨 Пробую SD 2.1...")
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
             data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
+                logger.info(f"🎨 SD 2.1 статус: {resp.status_code}")
                 if resp.status_code == 200 and resp.content:
+                    logger.info(f"✅ SD 2.1 сработал!")
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                         f.write(resp.content)
                         return f.name
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"❌ SD 2.1 ошибка: {e}")
     
     # 3. Pollinations
+    logger.info(f"🎨 Использую Pollinations...")
     try:
         enhanced = f"{prompt}, detailed, artstation style"
         encoded = enhanced.replace(" ", "%20")
@@ -284,7 +306,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
                     add_to_history(chat_id, user_id, "assistant", result)
                     return result
                 elif resp.status_code == 429:
-                    print(f"⚠️ Ключ {attempt+1}/12 rate-limit")
+                    logger.info(f"⚠️ Ключ {attempt+1}/12 rate-limit")
                     await asyncio.sleep(0.5)
                     continue
                 else:
@@ -377,20 +399,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Укажите, что нарисовать.")
             return
         
-        # Фильтр ТОЛЬКО на порно/NSFW
+        # Фильтр ТОЛЬКО на порно
         nsfw_keywords = [
             "порно", "porn", "xxx", "секс", "sex", "голые", "nude",
             "18+", "nsfw", "эротик", "hentai", "хентай", "трах",
             "член", "пенис", "вагина", "сиськи", "голая", "голый",
             "раздет", "обнажен", "нюдс", "nudes", "милф", "milf",
-            "буккаке", "фетиш", "бдсм", "оргия", "гей", "лесби",
-            "кунни", "минет", "отсос", "эякуляция"
+            "буккаке", "фетиш", "бдсм", "оргия", "гей", "лесби"
         ]
         if any(word in prompt.lower() for word in nsfw_keywords):
             await update.message.reply_text(
                 "🔐 Швейцарский художник не рисует такое. "
-                "Я вам что, уличный граффитист? Рисую только приличное: котиков, горы, часы, сыр. "
-                "И Тайлера Дердена с мачетой."
+                "Я вам что, уличный граффитист? Рисую только приличное."
             )
             return
         
