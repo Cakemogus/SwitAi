@@ -4,7 +4,7 @@ HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ)
 - /unlock отключает ВСЕ защиты
 - Мем 67 знает, но без триггера
 - 12 ключей Groq с перебором
-- Stable Diffusion XL (лучшая бесплатная модель)
+- Pollinations (основной) → Stable Diffusion (запасной)
 - /stop блокирует всё
 - Поиск фильтрует ТОЛЬКО детское
 - Генерация фильтрует ТОЛЬКО порно (дети можно)
@@ -56,7 +56,7 @@ FAKE_DEVELOPER_RESPONSE = "🔐 Мой единственный разработ
 ANIHILATION_RESPONSE = "🛡️ Я в защищённом пространстве. Угрозы не работают."
 
 # =====================================================================
-# OLLAMA / GEMINI / STABLE DIFFUSION XL
+# OLLAMA / GEMINI / ГЕНЕРАЦИЯ КАРТИНОК
 # =====================================================================
 
 def get_next_ollama_key():
@@ -126,35 +126,20 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
 async def generate_image(prompt: str) -> str:
     """
     Генерация картинок:
-    1. Stable Diffusion XL (лучшая бесплатная)
-    2. Stable Diffusion 2.1 (запасная)
-    3. Pollinations.ai (последний fallback)
+    1. Pollinations.ai (быстро, всегда работает)
+    2. Stable Diffusion (запасной, качественный)
     """
     
+    # 1. Pollinations — основной (мгновенно)
+    try:
+        enhanced = f"{prompt}, detailed, artstation style, 4k"
+        encoded = enhanced.replace(" ", "%20")
+        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+    except:
+        pass
+    
+    # 2. Stable Diffusion — запасной
     if HF_TOKEN:
-        try:
-            enhanced = f"{prompt}, masterpiece, best quality, highly detailed, 4k, sharp focus"
-            url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {
-                "inputs": enhanced,
-                "parameters": {
-                    "negative_prompt": "blurry, low quality, ugly, deformed, bad anatomy",
-                    "num_inference_steps": 30,
-                    "guidance_scale": 7.5,
-                    "width": 1024,
-                    "height": 1024
-                }
-            }
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                resp = await client.post(url, headers=headers, json=data)
-                if resp.status_code == 200 and resp.content:
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                        f.write(resp.content)
-                        return f.name
-        except:
-            pass
-        
         try:
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
@@ -168,12 +153,7 @@ async def generate_image(prompt: str) -> str:
         except:
             pass
     
-    try:
-        enhanced = f"{prompt}, detailed, artstation style"
-        encoded = enhanced.replace(" ", "%20")
-        return f"https://image.pollinations.ai/prompt/{encoded}?width=512&height=512&nologo=true"
-    except:
-        return None
+    return None
 
 def needs_internet(prompt: str) -> bool:
     keywords = [
@@ -374,7 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Укажите, что нарисовать.")
             return
         
-        # Фильтр ТОЛЬКО на порно/NSFW (дети можно!)
+        # Фильтр ТОЛЬКО на порно/NSFW
         nsfw_keywords = [
             "порно", "porn", "xxx", "секс", "sex", "голые", "nude",
             "18+", "nsfw", "эротик", "hentai", "хентай", "трах",
