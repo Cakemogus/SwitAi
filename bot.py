@@ -12,7 +12,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from config import BOT_TOKEN
-from handlers import handle_message
+from handlers import handle_message, stop_pvp_command, start_pvp_command
 from commands import (
     menu_command, exit_admin_command, debug_command,
     clear_memory_command, clear_all_memory_command,
@@ -121,7 +121,11 @@ def main():
     app.add_handler(CommandHandler("listchats", list_chats_command))
     app.add_handler(CommandHandler("removechat", remove_chat_command))
 
-    logger.info("✅ SwitAI запущен с модерацией и новой системой ключей!")
+    # === ПИНГ-ПОНГ ===
+    app.add_handler(CommandHandler("stoppvp", stop_pvp_command))
+    app.add_handler(CommandHandler("startpvp", start_pvp_command))
+
+    logger.info("✅ SwitAI запущен с модерацией, пинг-понгом и новой системой ключей!")
     
     # Запуск бота
     app.run_polling(allowed_updates=Update.ALL_TYPES)
