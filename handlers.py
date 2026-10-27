@@ -1,5 +1,5 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ОБНОВЛЕННЫЙ)
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ)
 ====================================================
 - 1 ключ Groq (основной) + 1 ключ Gemini (резерв и картинки)
 - Автоматическое переключение при ошибках Groq
@@ -92,12 +92,13 @@ async def search_web(query: str) -> str:
         return f"❌ Ошибка поиска: {str(e)}"
 
 async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
-    """Анализ картинок (использует единственный GEMINI_API_KEY)"""
+    """Анализ картинок (использует GEMINI_API_KEY)"""
     if not GEMINI_API_KEY:
         return "❌ Ключ Gemini не настроен."
         
     try:
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        # ИСПРАВЛЕНО: v1beta и gemini-2.5-flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient() as client:
             img_resp = await client.get(image_url)
             img_base64 = base64.b64encode(img_resp.content).decode()
@@ -112,7 +113,7 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
         return f"❌ Не получилось распознать. Ошибка: {str(e)[:100]}"
 
 async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
-    """Текстовая генерация через Gemini (резерв). Использует единственный GEMINI_API_KEY"""
+    """Текстовая генерация через Gemini (резерв). Использует GEMINI_API_KEY"""
     if not GEMINI_API_KEY:
         return "❌ Оба API недоступны. Ключ Gemini не настроен."
 
@@ -135,7 +136,8 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
         data["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        # ИСПРАВЛЕНО: v1beta и gemini-2.5-flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(url, json=data)
             if resp.status_code == 200:
@@ -265,7 +267,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     if GROQ_API_KEY:
         try:
             data = {
-                "model": "llama-3.3-70b-versatile",
+                "model": "openai/gpt-oss-120b", # Если не работает, попробуй "llama-3.3-70b-versatile"
                 "temperature": 0.3,
                 "messages": messages
             }
