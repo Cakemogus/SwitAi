@@ -2,7 +2,9 @@
 HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ)
 ====================================================
 - 1 ключ Groq (основной) + 1 ключ Gemini (резерв и картинки)
-- Автоматическое переключение при ошибках Groq
+- Память (всегда помнит контекст)
+- FLUX.1-schnell для картинок
+- Защита от пинг-понга с другими ботами
 """
 
 import random
@@ -15,7 +17,7 @@ import tempfile
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import (
-    GROQ_API_KEY, ADMIN_ID, GROQ_URL,
+    GROQ_API_KEY, ADMIN_ID, ADMIN_USERNAME, GROQ_URL,
     OLLAMA_API_KEYS, GEMINI_API_KEY
 )
 from utils import (
@@ -41,6 +43,8 @@ admin_mode = {}
 ollama_key_index = 0
 banned_users = {}
 muted_for_bot = {}
+bot_chain_counter = {}       # Счетчик сообщений в пинг-понге
+bot_pvp_disabled = set()     # Чаты, где пинг-понг отключен
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
@@ -97,7 +101,6 @@ async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, �
         return "❌ Ключ Gemini не настроен."
         
     try:
-        # ИСПРАВЛЕНО: v1beta и gemini-2.5-flash
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient() as client:
             img_resp = await client.get(image_url)
@@ -120,7 +123,6 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
     system_prompt = ""
     contents = []
     
-    # Конвертируем формат OpenAI (Groq) в формат Gemini
     for msg in messages:
         if msg["role"] == "system":
             system_prompt += msg["content"] + "\n"
@@ -136,7 +138,6 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
         data["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
     try:
-        # ИСПРАВЛЕНО: v1beta и gemini-2.5-flash
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(url, json=data)
@@ -150,11 +151,11 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
         return f"❌ SwitAI временно в шоке. (Ошибка Gemini: {str(e)[:50]})"
 
 async def generate_image(prompt: str) -> str:
-    # Stable Diffusion
+    # 1. Пробуем FLUX.1-schnell (если есть HF_TOKEN)
     if HF_TOKEN:
         try:
-            enhanced = f"{prompt}, high quality, detailed, 4k"
-            url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
+            enhanced = f"{prompt}, high quality, detailed, 4k, masterpiece"
+            url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
             data = {"inputs": enhanced}
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -166,11 +167,11 @@ async def generate_image(prompt: str) -> str:
         except:
             pass
     
-    # Fallback Pollinations
+    # 2. Fallback Pollinations (улучшенный)
     try:
-        enhanced = f"{prompt}, detailed, artstation style"
-        encoded = enhanced.replace(" ", "%20")
-        return f"https://image.pollinations.ai/prompt/{encoded}?width=512&height=512&nologo=true"
+        enhanced_prompt = f"{prompt}, high quality, detailed, 4k, masterpiece, trending on artstation"
+        encoded = enhanced_prompt.replace(" ", "%20").replace(",", "%2C")
+        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&nologo=true&enhance=true"
     except:
         return None
 
@@ -197,7 +198,7 @@ async def start_verdict(update, user_id, topic, chat_id):
     )
 
 # =====================================================================
-# ОСНОВНАЯ ФУНКЦИЯ (ИЗМЕНЕНА)
+# ОСНОВНАЯ ФУНКЦИЯ
 # =====================================================================
 
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -229,11 +230,12 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         search_result = await search_web(prompt)
         return f"🌐 *Результаты поиска:*\n\n{search_result}"
 
+    # === ИСПРАВЛЕННАЯ ПАМЯТЬ ===
+    # 1. Достаем историю (последние 10 + релевантные)
+    history = get_context_with_history(chat_id, user_id, prompt)
+    
+    # 2. Сохраняем текущее сообщение пользователя
     add_to_history(chat_id, user_id, "user", prompt)
-    history_needed = any(word in prompt.lower() for word in [
-        "помнишь", "говорил", "про", "о", "вернись", "что я", "расскажи про", "напомни"
-    ])
-    history = get_context_with_history(chat_id, user_id, prompt) if history_needed else []
 
     has_mate = contains_mate(prompt)
     
@@ -257,17 +259,21 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
             system_prompt += "ПОЛЬЗОВАТЕЛЬ ИСПОЛЬЗОВАЛ МАТ. ОТВЕТЬ ВЕЖЛИВО, НО САМ НЕ МАТЕРИСЬ."
 
     messages = [{"role": "system", "content": system_prompt}]
+    
+    # 3. Добавляем прошлые сообщения
     for msg in history:
         messages.append({"role": msg['role'], "content": msg['content']})
+        
+    # 4. Добавляем текущее сообщение
     messages.append({"role": "user", "content": prompt})
 
     # ==========================================
-    # ШАГ 1: ПРОБУЕМ GROQ (1 КЛЮЧ)
+    # ШАГ 1: ПРОБУЕМ GROQ
     # ==========================================
     if GROQ_API_KEY:
         try:
             data = {
-                "model": "openai/gpt-oss-120b", # Если не работает, попробуй "llama-3.3-70b-versatile"
+                "model": "openai/gpt-oss-120b",
                 "temperature": 0.3,
                 "messages": messages
             }
@@ -284,7 +290,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
             print(f"⚠️ Groq ошибка: {str(e)[:50]}. Переключаюсь на Gemini...")
 
     # ==========================================
-    # ШАГ 2: ЕСЛИ GROQ УПАЛ, ИДЕМ В GEMINI
+    # ШАГ 2: РЕЗЕРВ GEMINI
     # ==========================================
     print("🔄 Использую резервный Gemini...")
     result = await ask_gemini_text(messages, temperature=0.3)
@@ -292,7 +298,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     return result
 
 # =====================================================================
-# ОБРАБОТЧИК (ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ)
+# ОБРАБОТЧИК
 # =====================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -300,6 +306,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message:
         return
+
+    # === ЗАЩИТА ОТ ПИНГ-ПОНГА ===
+    if update.message.from_user.is_bot:
+        chat_id = update.message.chat.id
+        if chat_id in bot_pvp_disabled:
+            return
+        
+        bot_chain_counter[chat_id] = bot_chain_counter.get(chat_id, 0) + 1
+        
+        if bot_chain_counter[chat_id] > 10:
+            await update.message.reply_text(
+                "🤖 Ок, ничья! Я устал спорить с роботом. "
+                "Напишите что-нибудь сами, чтобы продолжить."
+            )
+            bot_chain_counter[chat_id] = 0
+            return
+    else:
+        if update.message.chat.id in bot_chain_counter:
+            del bot_chain_counter[update.message.chat.id]
+    # ==============================
 
     chat_id = update.message.chat.id
     chat_type = update.message.chat.type
@@ -372,7 +398,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Укажите, что нарисовать.")
             return
         
-        # Фильтр ТОЛЬКО на детское
         cp_keywords = ["cp", "детское", "малолет", "школьниц", "loli", "лоли", "underage", "child", "kid", "дети", "малыш"]
         if any(word in prompt.lower() for word in cp_keywords):
             await update.message.reply_text("🚨 Генерация отменена. Это незаконно.")
@@ -392,10 +417,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 await update.message.reply_text("❌ Ошибка при отправке.")
         return
-
-    # История
-    if chat_type in ["group", "supergroup"]:
-        add_to_history(chat_id, user_id, "user", text)
 
     # Упоминание
     if chat_type in ["group", "supergroup"]:
@@ -452,3 +473,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply += random.choice(SWISS_EASTER_EGGS)
     for part in split_text(reply):
         await update.message.reply_text(part)
+
+
+# =====================================================================
+# КОМАНДЫ ПИНГ-ПОНГА
+# =====================================================================
+
+
+
+async def stop_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    bot_pvp_disabled.add(chat_id)
+    await update.message.reply_text("🛑 Пинг-понг с ботами в этом чате отключён. Люди могут общаться свободно.")
+
+async def start_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    chat_id = update.message.chat.id
+    bot_pvp_disabled.discard(chat_id)
+    await update.message.reply_text("✅ Пинг-понг с ботами снова разрешён.")
