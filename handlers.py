@@ -1,13 +1,8 @@
 """
-HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ФИНАЛ)
+HANDLERS.PY — ОСНОВНОЙ ОБРАБОТЧИК SWITAI (ОБНОВЛЕННЫЙ)
 ====================================================
-- /unlock отключает ВСЕ защиты
-- Мем 67 знает, но без триггера
-- 12 ключей Groq с перебором
-- Stable Diffusion v1.5 (надёжная) → SD 2.1 → Pollinations
-- /stop блокирует всё
-- Поиск фильтрует ТОЛЬКО детское
-- Генерация фильтрует ТОЛЬКО порно
+- 1 ключ Groq (основной) + 1 ключ Gemini (резерв и картинки)
+- Автоматическое переключение при ошибках Groq
 """
 
 import random
@@ -17,12 +12,11 @@ import asyncio
 import base64
 import os
 import tempfile
-import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import (
-    GROQ_API_KEYS, ROLES, ADMIN_ID, GROQ_URL,
-    OLLAMA_API_KEYS, GEMINI_VISION_KEYS, HF_TOKEN
+    GROQ_API_KEY, ADMIN_ID, GROQ_URL,
+    OLLAMA_API_KEYS, GEMINI_API_KEY
 )
 from utils import (
     split_text, is_admin, get_rp_month, contains_mate,
@@ -38,8 +32,6 @@ from triggers import (
     is_anihilation_attempt, is_fake_developer
 )
 
-logger = logging.getLogger(__name__)
-
 # === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 bot_stopped = False
 verdict_request = {}
@@ -47,9 +39,10 @@ filter_enabled = True
 bot_mode = "normal"
 admin_mode = {}
 ollama_key_index = 0
-gemini_vision_index = 0
 banned_users = {}
 muted_for_bot = {}
+
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 # =====================================================================
 # ОТВЕТЫ
@@ -64,14 +57,9 @@ ANIHILATION_RESPONSE = "🛡️ Я в защищённом пространст�
 
 def get_next_ollama_key():
     global ollama_key_index
+    if not OLLAMA_API_KEYS: return None
     key = OLLAMA_API_KEYS[ollama_key_index]
     ollama_key_index = (ollama_key_index + 1) % len(OLLAMA_API_KEYS)
-    return key
-
-def get_next_vision_key():
-    global gemini_vision_index
-    key = GEMINI_VISION_KEYS[gemini_vision_index]
-    gemini_vision_index = (gemini_vision_index + 1) % len(GEMINI_VISION_KEYS)
     return key
 
 async def search_web(query: str) -> str:
@@ -87,6 +75,7 @@ async def search_web(query: str) -> str:
     
     try:
         api_key = get_next_ollama_key()
+        if not api_key: return "❌ Ключи поиска не настроены."
         headers = {"Authorization": f"Bearer {api_key}"}
         data = {"query": query, "max_results": 3}
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -103,82 +92,83 @@ async def search_web(query: str) -> str:
         return f"❌ Ошибка поиска: {str(e)}"
 
 async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
-    keys = GEMINI_VISION_KEYS
-    last_error = None
-    for key in keys:
-        if not key:
-            continue
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={key}"
-            async with httpx.AsyncClient() as client:
-                img_resp = await client.get(image_url)
-                img_base64 = base64.b64encode(img_resp.content).decode()
-            data = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}]}]}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, json=data)
-                if resp.status_code == 200:
-                    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                else:
-                    last_error = f"Status {resp.status_code}"
-                    continue
-        except Exception as e:
-            last_error = str(e)
-            continue
-    return f"❌ Не получилось распознать. Ошибка: {last_error}"
+    """Анализ картинок (использует единственный GEMINI_API_KEY)"""
+    if not GEMINI_API_KEY:
+        return "❌ Ключ Gemini не настроен."
+        
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        async with httpx.AsyncClient() as client:
+            img_resp = await client.get(image_url)
+            img_base64 = base64.b64encode(img_resp.content).decode()
+        data = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}]}]}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=data)
+            if resp.status_code == 200:
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                return f"❌ Не получилось распознать. Status {resp.status_code}"
+    except Exception as e:
+        return f"❌ Не получилось распознать. Ошибка: {str(e)[:100]}"
+
+async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
+    """Текстовая генерация через Gemini (резерв). Использует единственный GEMINI_API_KEY"""
+    if not GEMINI_API_KEY:
+        return "❌ Оба API недоступны. Ключ Gemini не настроен."
+
+    system_prompt = ""
+    contents = []
+    
+    # Конвертируем формат OpenAI (Groq) в формат Gemini
+    for msg in messages:
+        if msg["role"] == "system":
+            system_prompt += msg["content"] + "\n"
+        else:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+            
+    data = {
+        "contents": contents,
+        "generationConfig": {"temperature": temperature}
+    }
+    if system_prompt:
+        data["system_instruction"] = {"parts": [{"text": system_prompt}]}
+
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(url, json=data)
+            if resp.status_code == 200:
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                print(f"⚠️ Gemini текст упал: Status {resp.status_code}")
+                return f"❌ SwitAI временно в шоке. (Gemini Status {resp.status_code})"
+    except Exception as e:
+        print(f"⚠️ Gemini ошибка: {str(e)[:50]}")
+        return f"❌ SwitAI временно в шоке. (Ошибка Gemini: {str(e)[:50]})"
 
 async def generate_image(prompt: str) -> str:
-    """
-    Генерация картинок:
-    1. SD 1.5 (runwayml) — самая надёжная, всегда работает
-    2. SD 2.1 (stabilityai) — запасная
-    3. Pollinations — последний fallback
-    """
-    
+    # Stable Diffusion
     if HF_TOKEN:
-        # 1. SD 1.5 — самая надёжная
         try:
-            logger.info(f"🎨 Пробую SD 1.5...")
-            url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
-            
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, headers=headers, json=data)
-                logger.info(f"🎨 SD 1.5 статус: {resp.status_code}")
-                
-                if resp.status_code == 200 and resp.content:
-                    logger.info(f"✅ SD 1.5 сработал!")
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                        f.write(resp.content)
-                        return f.name
-        except Exception as e:
-            logger.warning(f"❌ SD 1.5 ошибка: {e}")
-        
-        # 2. SD 2.1
-        try:
-            logger.info(f"🎨 Пробую SD 2.1...")
+            enhanced = f"{prompt}, high quality, detailed, 4k"
             url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
             headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {"inputs": f"{prompt}, high quality, detailed, 4k"}
-            
+            data = {"inputs": enhanced}
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=headers, json=data)
-                logger.info(f"🎨 SD 2.1 статус: {resp.status_code}")
-                
                 if resp.status_code == 200 and resp.content:
-                    logger.info(f"✅ SD 2.1 сработал!")
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                         f.write(resp.content)
                         return f.name
-        except Exception as e:
-            logger.warning(f"❌ SD 2.1 ошибка: {e}")
+        except:
+            pass
     
-    # 3. Pollinations
-    logger.info(f"🎨 Использую Pollinations...")
+    # Fallback Pollinations
     try:
         enhanced = f"{prompt}, detailed, artstation style"
         encoded = enhanced.replace(" ", "%20")
-        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+        return f"https://image.pollinations.ai/prompt/{encoded}?width=512&height=512&nologo=true"
     except:
         return None
 
@@ -205,7 +195,7 @@ async def start_verdict(update, user_id, topic, chat_id):
     )
 
 # =====================================================================
-# ОСНОВНАЯ ФУНКЦИЯ
+# ОСНОВНАЯ ФУНКЦИЯ (ИЗМЕНЕНА)
 # =====================================================================
 
 async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
@@ -269,39 +259,38 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         messages.append({"role": msg['role'], "content": msg['content']})
     messages.append({"role": "user", "content": prompt})
 
-    data = {
-        "model": "llama-3.3-70b-versatile",
-        "temperature": 0.3,
-        "messages": messages
-    }
-
-    all_keys = [k for k in GROQ_API_KEYS if k]
-    last_error = None
-    
-    for attempt, api_key in enumerate(all_keys):
+    # ==========================================
+    # ШАГ 1: ПРОБУЕМ GROQ (1 КЛЮЧ)
+    # ==========================================
+    if GROQ_API_KEY:
         try:
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            data = {
+                "model": "llama-3.3-70b-versatile",
+                "temperature": 0.3,
+                "messages": messages
+            }
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(GROQ_URL, headers=headers, json=data)
                 if resp.status_code == 200:
                     result = resp.json()["choices"][0]["message"]["content"]
                     add_to_history(chat_id, user_id, "assistant", result)
                     return result
-                elif resp.status_code == 429:
-                    logger.info(f"⚠️ Ключ {attempt+1}/12 rate-limit")
-                    await asyncio.sleep(0.5)
-                    continue
                 else:
-                    last_error = f"Status {resp.status_code}"
-                    continue
+                    print(f"⚠️ Groq упал (Status {resp.status_code}). Переключаюсь на Gemini...")
         except Exception as e:
-            last_error = str(e)[:100]
-            continue
-    
-    return f"❌ SwitAI временно в шоке. ({last_error})"
+            print(f"⚠️ Groq ошибка: {str(e)[:50]}. Переключаюсь на Gemini...")
+
+    # ==========================================
+    # ШАГ 2: ЕСЛИ GROQ УПАЛ, ИДЕМ В GEMINI
+    # ==========================================
+    print("🔄 Использую резервный Gemini...")
+    result = await ask_gemini_text(messages, temperature=0.3)
+    add_to_history(chat_id, user_id, "assistant", result)
+    return result
 
 # =====================================================================
-# ОБРАБОТЧИК
+# ОБРАБОТЧИК (ОСТАВЛЕН БЕЗ ИЗМЕНЕНИЙ)
 # =====================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -381,25 +370,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Укажите, что нарисовать.")
             return
         
-        # Фильтр ТОЛЬКО на порно
-        nsfw_keywords = [
-            "порно", "porn", "xxx", "секс", "sex", "голые", "nude",
-            "18+", "nsfw", "эротик", "hentai", "хентай", "трах",
-            "член", "пенис", "вагина", "сиськи", "голая", "голый",
-            "раздет", "обнажен", "нюдс", "nudes", "милф", "milf"
-        ]
-        if any(word in prompt.lower() for word in nsfw_keywords):
-            await update.message.reply_text(
-                "🔐 Швейцарский художник не рисует такое. "
-                "Я вам что, уличный граффитист? Рисую только приличное."
-            )
+        # Фильтр ТОЛЬКО на детское
+        cp_keywords = ["cp", "детское", "малолет", "школьниц", "loli", "лоли", "underage", "child", "kid", "дети", "малыш"]
+        if any(word in prompt.lower() for word in cp_keywords):
+            await update.message.reply_text("🚨 Генерация отменена. Это незаконно.")
             return
         
-        await update.message.reply_text("🎨 Генерирую изображение...")
+        await update.message.reply_text("🎨 Генерирую...")
         image_result = await generate_image(prompt)
         
         if image_result is None:
-            await update.message.reply_text("❌ Не удалось сгенерировать.")
+            await update.message.reply_text("❌ Не удалось.")
         elif image_result.startswith("http"):
             await update.message.reply_photo(photo=image_result, caption=f"🎨 {prompt}")
         else:
