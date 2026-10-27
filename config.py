@@ -1,102 +1,32 @@
-"""
-КОНФИГУРАЦИЯ SWITAI
-====================
-12 ключей Groq + Ollama + Gemini + HuggingFace
-"""
-
 import os
 import json
-from dotenv import load_dotenv
 
-load_dotenv()
+# === ТОКЕНЫ ===
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# =====================================================================
-# GROQ (12 КЛЮЧЕЙ)
-# =====================================================================
+# === КЛЮЧ GROQ (1 ШТ) ===
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-GROQ_API_KEYS = [
-    os.getenv("GROQ_API_KEY_1"),
-    os.getenv("GROQ_API_KEY_2"),
-    os.getenv("GROQ_API_KEY_3"),
-    os.getenv("GROQ_API_KEY_4"),
-    os.getenv("GROQ_API_KEY_5"),
-    os.getenv("GROQ_API_KEY_6"),
-    os.getenv("GROQ_API_KEY_7"),
-    os.getenv("GROQ_API_KEY_8"),
-    os.getenv("GROQ_API_KEY_9"),
-    os.getenv("GROQ_API_KEY_10"),
-    os.getenv("GROQ_API_KEY_11"),
-    os.getenv("GROQ_API_KEY_12"),
-]
+# === КЛЮЧ GEMINI (1 ШТ) ===
+# Будет использоваться и для текста (если Groq упадет), и для картинок
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-ROLES = {
-    "history_manager": 0,
-    "general": [1, 2, 3],
-    "verdict": [4, 5, 6, 7],
-    "history_compressor": 8,
-    "fun": 9,
-    "backup": [10, 11]
-}
-
-# =====================================================================
-# OLLAMA (ПОИСК)
-# =====================================================================
-
+# === КЛЮЧИ OLLAMA (2 ШТ) ===
 OLLAMA_API_KEYS = [
     os.getenv("OLLAMA_API_KEY_1"),
     os.getenv("OLLAMA_API_KEY_2")
 ]
 
-# =====================================================================
-# GEMINI (КАРТИНКИ)
-# =====================================================================
-
-GEMINI_GENERATE_KEYS = [
-    os.getenv("GEMINI_GENERATE_KEY_1"),
-    os.getenv("GEMINI_GENERATE_KEY_2")
-]
-
-GEMINI_VISION_KEYS = [
-    os.getenv("GEMINI_VISION_KEY_1"),
-    os.getenv("GEMINI_VISION_KEY_2")
-]
-
-# =====================================================================
-# HUGGINGFACE (STABLE DIFFUSION)
-# =====================================================================
-
-HF_TOKEN = os.getenv("HF_TOKEN", "")
-
-# =====================================================================
-# URL API
-# =====================================================================
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-# =====================================================================
-# TELEGRAM
-# =====================================================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# =====================================================================
-# АДМИН
-# =====================================================================
-
+# === ТВОИ ДАННЫЕ ===
 ADMIN_ID = 7184396483
 ADMIN_USERNAME = "cakemogus"
 
-# =====================================================================
-# НАСТРОЙКИ
-# =====================================================================
-
+# === НАСТРОЙКИ ===
 MAX_PROMPT_LENGTH = 8000
 MAX_HISTORY_MESSAGES = 50
 
-# =====================================================================
-# СОХРАНЁННЫЕ ЧАТЫ
-# =====================================================================
-
+# === СОХРАНЁННЫЕ ЧАТЫ ===
 SAVED_CHATS_FILE = "saved_chats.json"
 
 def load_saved_chats():
