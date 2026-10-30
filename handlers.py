@@ -5,6 +5,7 @@ HANDLERS.PY — SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ)
 - Кулдаун (антиспам)
 - Память и фиксы приветствий
 - Защита от пинг-понга
+- Актуальная модель Gemini 3.8 Flash
 """
 
 import random
@@ -89,8 +90,8 @@ async def search_web(query: str) -> str:
 async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
     if not GEMINI_API_KEY: return "❌ Ключ Gemini не настроен."
     try:
-        # ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ 1.5-FLASH (чтобы не было 404)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # ЗАМЕНЕНО НА 3.8-FLASH
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient() as client:
             img_resp = await client.get(image_url)
             img_base64 = base64.b64encode(img_resp.content).decode()
@@ -120,7 +121,8 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
         data["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # ЗАМЕНЕНО НА 3.8-FLASH
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(url, json=data)
             if resp.status_code == 200:
@@ -424,6 +426,4 @@ async def stop_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     bot_pvp_disabled.add(update.message.chat.id)
-    await update.message.reply_text("🛑 Пинг-понг с ботами отключён.")
-
-async def start_pvp_command(
+    await update.message.reply_text("🛑 Пинг-понг с ботами от
