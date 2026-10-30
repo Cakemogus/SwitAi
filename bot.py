@@ -1,7 +1,7 @@
 """
-BOT.PY — SWITAI (ТОЧКА ВХОДА)
+BOT.PY — SWITAI (ФИНАЛЬНАЯ ТОЧКА ВХОДА)
 =========================================
-Запуск Telegram-бота и Flask для Health Check.
+Запуск Telegram-бота, Flask для Health Check и регистрация всех команд.
 """
 
 import logging
@@ -29,18 +29,17 @@ from commands import (
 )
 
 # =====================================================================
-# ЛОГИРОВАНИЕ (Чтобы видеть ошибки в консоли хостинга)
+# ЛОГИРОВАНИЕ
 # =====================================================================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
     level=logging.INFO
 )
-# Отключаем спам от библиотеки httpx (чтобы логи не забивались запросами к API)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# FLASK ДЛЯ HEALTH CHECK (Чтобы хостинг не усыплял бота)
+# FLASK ДЛЯ HEALTH CHECK (Чтобы Render не усыплял бота)
 # =====================================================================
 app_web = Flask(__name__)
 
@@ -51,7 +50,6 @@ def health_check():
 
 def run_web():
     port = int(os.environ.get("PORT", "10000"))
-    # Отключаем логи Flask, чтобы не засорять консоль
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
     app_web.run(host='0.0.0.0', port=port)
@@ -64,26 +62,22 @@ def main():
         logger.error("❌ Не установлен BOT_TOKEN в переменных окружения!")
         return
 
-    # Запускаем Flask в отдельном потоке для Health Check
     thread = Thread(target=run_web)
     thread.daemon = True
     thread.start()
     logger.info(f"✅ Flask Health Check запущен на порту {os.environ.get('PORT', '10000')}")
 
-    # Инициализация Telegram Бота
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # === ПОДКЛЮЧЕНИЕ ОБРАБОТЧИКОВ ===
-    
-    # Обработчик обычных сообщений (текст)
+    # === ОБРАБОТЧИКИ СООБЩЕНИЙ ===
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Публичные команды
+    # === ПУБЛИЧНЫЕ КОМАНДЫ ===
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("about", about_command))
 
-    # Админские команды
+    # === АДМИНСКИЕ КОМАНДЫ ===
     app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("exit_admin", exit_admin_command))
     app.add_handler(CommandHandler("debug", debug_command))
@@ -97,7 +91,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("start", start_command))
     
-    # Модерация (старые команды)
+    # === МОДЕРАЦИЯ ===
     app.add_handler(CommandHandler("warn", warn_command))
     app.add_handler(CommandHandler("mute", mute_command))
     app.add_handler(CommandHandler("unmute", unmute_command))
@@ -112,7 +106,7 @@ def main():
     app.add_handler(CommandHandler("unsb", unsb_command))
     app.add_handler(CommandHandler("unsm", unsm_command))
     
-    # Утилиты
+    # === УТИЛИТЫ ===
     app.add_handler(CommandHandler("say", say_command))
     app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("clear_chat", clear_chat_command))
@@ -127,7 +121,6 @@ def main():
 
     logger.info("✅ SwitAI запущен с модерацией, пинг-понгом и новой системой ключей!")
     
-    # Запуск бота
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
