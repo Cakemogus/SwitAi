@@ -5,14 +5,20 @@ import json
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# === КЛЮЧ GROQ (1 ШТ) ===
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# === КЛЮЧИ GROQ (ПОДДЕРЖКА НЕСКОЛЬКИХ) ===
+# На хостинге добавь GROQ_API_KEY, GROQ_API_KEY_2 (если есть) и т.д.
+GROQ_API_KEYS = [
+    os.getenv("GROQ_API_KEY"),
+    os.getenv("GROQ_API_KEY_2"),
+    os.getenv("GROQ_API_KEY_3"),
+]
+# Убираем пустые значения, если какие-то ключи не заданы
+GROQ_API_KEYS = [k for k in GROQ_API_KEYS if k]
 
-# === КЛЮЧ GEMINI (1 ШТ) ===
-# Будет использоваться и для текста (если Groq упадет), и для картинок
+# === КЛЮЧ GEMINI ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# === КЛЮЧИ OLLAMA (2 ШТ) ===
+# === КЛЮЧИ OLLAMA ===
 OLLAMA_API_KEYS = [
     os.getenv("OLLAMA_API_KEY_1"),
     os.getenv("OLLAMA_API_KEY_2")
