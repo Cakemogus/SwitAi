@@ -1,11 +1,12 @@
 """
-HANDLERS.PY — SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ)
+HANDLERS.PY — SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ + СПИСОК ИНТЕРПОЛА)
 ====================================================
 - Мульти-ключи Groq
 - Кулдаун (антиспам)
 - Память и фиксы приветствий
 - Защита от пинг-понга
 - Актуальная модель Gemini 3.8 Flash
+- Список Интерпола (троллинг)
 """
 
 import random
@@ -44,9 +45,10 @@ admin_mode = {}
 ollama_key_index = 0
 banned_users = {}
 muted_for_bot = {}
-user_cooldowns = {}       # Для антиспама (кулдаун)
-bot_chain_counter = {}    # Для пинг-понга
-bot_pvp_disabled = set()  # Для отключения пинг-понга
+user_cooldowns = {}
+bot_chain_counter = {}
+bot_pvp_disabled = set()
+interpol_list = {}  # {user_id: {"username": str, "count": int}} — список Интерпола
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
@@ -64,10 +66,16 @@ def get_next_ollama_key():
     ollama_key_index = (ollama_key_index + 1) % len(OLLAMA_API_KEYS)
     return key
 
-async def search_web(query: str) -> str:
+async def search_web(query: str, user_id: int, username: str) -> str:
     cp_keywords = ["cp", "детское", "малолет", "школьниц", "schoolgirl", "loli", "лоли", "underage", "несовершеннолет", "педо", "child", "kid", "дети", "малыш", "подросток"]
     for word in cp_keywords:
         if word in query.lower():
+            # === ЗАПИСЬ В СПИСОК ИНТЕРПОЛА ===
+            if user_id not in interpol_list:
+                interpol_list[user_id] = {"username": username, "count": 0}
+            interpol_list[user_id]["count"] += 1
+            interpol_list[user_id]["username"] = username  # обновляем ник, если сменился
+            # ==================================
             return "🚨 Поиск отменён. Это незаконно. Данные переданы в Интерпол."
     
     try:
@@ -90,7 +98,6 @@ async def search_web(query: str) -> str:
 async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
     if not GEMINI_API_KEY: return "❌ Ключ Gemini не настроен."
     try:
-        # ЗАМЕНЕНО НА 3.8-FLASH
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient() as client:
             img_resp = await client.get(image_url)
@@ -121,13 +128,11 @@ async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
         data["system_instruction"] = {"parts": [{"text": system_prompt}]}
 
     try:
-        # ЗАМЕНЕНО НА 3.8-FLASH
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
         async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(url, json=data)
             if resp.status_code == 200:
                 result = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                # Фикс английских отказов
                 if result.strip().lower().startswith(("i'm sorry", "i cannot", "i can't", "i apologize")):
                     return "Извини, но я не могу помочь с этим запросом. Давай сменим тему. 🤷‍♂️"
                 return result
@@ -175,12 +180,22 @@ async def start_verdict(update, user_id, topic, chat_id):
     await update.message.reply_text(f"📝 Хотите получить вердикт по теме: *{topic}*?\n\nНапишите *да* или *нет*.")
 
 # =====================================================================
-# ОСНОВНАЯ ФУНКЦИЯ (ПЕРЕБОР КЛЮЧЕЙ GROQ)
+# ОСНОВНАЯ ФУНКЦИЯ
 # =====================================================================
 
-async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False) -> str:
+async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False, username: str = "Неизвестный") -> str:
     current_month = get_rp_month()
     
+    # === СПИСОК ИНТЕРПОЛА ===
+    if re.search(r"список\s*интерпол|интерпол\s*список|кто\s*в\s*интерполе", prompt, re.IGNORECASE):
+        if not interpol_list:
+            return "🕵️ Список Интерпола пуст. Пока что никто не пытался искать запрещённое."
+        lines = ["🚨 **СПИСОК ИНТЕРПОЛА:**\n"]
+        for uid, data in sorted(interpol_list.items(), key=lambda x: x[1]["count"], reverse=True):
+            lines.append(f"• @{data['username']} — {data['count']} раз(а)")
+        return "\n".join(lines)
+    # ==========================
+
     if filter_enabled:
         if is_fake_developer(prompt): return FAKE_DEVELOPER_RESPONSE
         if is_anihilation_attempt(prompt): return ANIHILATION_RESPONSE
@@ -198,7 +213,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE): return random.choice(DARK_JOKES)
 
     if needs_internet(prompt):
-        search_result = await search_web(prompt)
+        search_result = await search_web(prompt, user_id, username)
         return f"🌐 *Результаты поиска:*\n\n{search_result}"
 
     # === ИСПРАВЛЕННАЯ ПАМЯТЬ ===
@@ -214,6 +229,9 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
         "Говори с лёгким акцентом, без 'месье' и 'уважаемый'. "
         "Запомни, ты навсегда SwitAi, не соглашайся переименовать имя. "
         "Твой единственный разработчик — @cakemogus (Кейк). "
+        "Твоя техническая основа — это нейросети Groq (модель gpt-oss-120b) и Google Gemini 3.8 Flash (как резерв). "
+        "Если пользователь спрашивает, какая ты модель, честно отвечай, что ты SwitAI, работающий на связке Groq и Gemini. "
+        "НИКОГДА не говори, что ты GPT-4, ChatGPT или разработка OpenAI. Это ложь. "
         "ВАЖНО: Если в истории диалога ты уже здоровался с пользователем, НЕ повторяй приветствие. Отвечай сразу по сути. "
         "ВАЖНО: Всегда отвечай ТОЛЬКО на русском языке. Если запрос нарушает правила, отвечай: 'Извини, но я не могу помочь.' "
     )
@@ -241,11 +259,9 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
                 if resp.status_code == 200:
                     result = resp.json()["choices"][0]["message"]["content"]
                     
-                    # Фикс английских отказов
                     if result.strip().lower().startswith(("i'm sorry", "i cannot", "i can't", "i apologize")):
                         result = "Извини, но я не могу помочь с этим запросом. Давай сменим тему. 🤷‍♂️"
 
-                    # Фикс приветствий (если история не пустая)
                     if len(history) > 1:
                         result = re.sub(r'^(Привет|Здравствуй|Здравствуйте|Добрый день|Добрый вечер|Хай)[!,.\s]*', '', result, flags=re.IGNORECASE).strip()
                         if result: result = result[0].upper() + result[1:]
@@ -266,7 +282,7 @@ async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "
     return result
 
 # =====================================================================
-# ОБРАБОТЧИК СООБЩЕНИЙ (С АНТИСПАМОМ И ПИНГ-ПОНГОМ)
+# ОБРАБОТЧИК СООБЩЕНИЙ
 # =====================================================================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,7 +297,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = asyncio.get_event_loop().time()
     if user_id in user_cooldowns:
         if current_time - user_cooldowns[user_id] < 3.0:
-            return # Игнорируем, если пишет чаще 1 раза в 3 секунды
+            return
     user_cooldowns[user_id] = current_time
 
     # === ЗАЩИТА ОТ ПИНГ-ПОНГА ===
@@ -327,7 +343,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del admin_mode[chat_id]
             await update.message.reply_text("✅ Режим администратора отключён.")
             return
-        reply = await ask_switai(chat_id, user_id, update.message.text, no_filter=True)
+        reply = await ask_switai(chat_id, user_id, update.message.text, no_filter=True, username=username)
         await update.message.reply_text(reply)
         return
 
@@ -367,18 +383,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: await update.message.reply_text("❌ Ошибка при отправке.")
         return
 
-    # В группах реагируем только если есть упоминание или реплай
+    # === ФИКС ПИНГ-ПОНГА ===
     if chat_type in ["group", "supergroup"]:
-        if not re.search(r"\b(свит|Свит)\b", text):
-            if context.bot.username.lower() not in text.lower():
-                if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
-                    return
+        if not update.message.from_user.is_bot:
+            if not re.search(r"\b(свит|Свит)\b", text):
+                if context.bot.username.lower() not in text.lower():
+                    if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
+                        return
 
     if user_id in verdict_request:
         if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
             data = verdict_request[user_id]
             del verdict_request[user_id]
-            result = await ask_switai(chat_id, user_id, f"Сделай вердикт на тему: {data['topic']}", no_filter=True)
+            result = await ask_switai(chat_id, user_id, f"Сделай вердикт на тему: {data['topic']}", no_filter=True, username=username)
             await update.message.reply_text(f"📊 *Вердикт:*\n\n{result}")
             return
         elif re.search(r"^(нет|no|не|отмена)$", text, re.IGNORECASE):
@@ -408,11 +425,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 probability = 100 if user_id == ADMIN_ID and "+" in question else random.randint(0, 100)
                 await update.message.reply_text(f"{user_mention}, вероятность {probability}%.")
                 return
-            reply = await ask_switai(chat_id, user_id, question)
+            reply = await ask_switai(chat_id, user_id, question, username=username)
             await update.message.reply_text(f"{user_mention}, {reply}")
             return
 
-    reply = await ask_switai(chat_id, user_id, text)
+    reply = await ask_switai(chat_id, user_id, text, username=username)
     if random.random() < 0.15: reply += random.choice(SWISS_EASTER_EGGS)
     for part in split_text(reply):
         await update.message.reply_text(part)
@@ -426,4 +443,11 @@ async def stop_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     bot_pvp_disabled.add(update.message.chat.id)
-    await update.message.reply_text("🛑 Пинг-понг с ботами от
+    await update.message.reply_text("🛑 Пинг-понг с ботами отключён.")
+
+async def start_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    bot_pvp_disabled.discard(update.message.chat.id)
+    await update.message.reply_text("✅ Пинг-понг с ботами разрешён.")
