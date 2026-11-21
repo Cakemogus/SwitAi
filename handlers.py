@@ -1,453 +1,378 @@
 """
-HANDLERS.PY — SWITAI (ФИНАЛЬНАЯ ВЕРСИЯ + СПИСОК ИНТЕРПОЛА)
-====================================================
-- Мульти-ключи Groq
-- Кулдаун (антиспам)
-- Память и фиксы приветствий
-- Защита от пинг-понга
-- Актуальная модель Gemini 3.8 Flash
-- Список Интерпола (троллинг)
+HANDLERS.PY — SWITAI 2.0
+========================
+Что тут изменилось по сравнению со старой версией:
+  • единое состояние (state.py) — баны/муты/фильтр теперь реально работают;
+  • антиспам-кулдаун срабатывает только на сообщения, адресованные боту (раньше «съедал» чужие);
+  • фото в чате теперь обрабатываются (раньше хендлер ловил только текст);
+  • вебпоиск теперь отвечает человеческим языком + источники;
+  • динамический системный промпт: дата/время, ник собеседника, режим normal/expert;
+  • админ освобождён от кулдауна и текстовых фильтров, но проверка админа та же — по ID или нику.
 """
 
+import asyncio
+import logging
 import random
 import re
-import httpx
-import asyncio
-import base64
-import os
-import tempfile
+import time
+
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
-from config import (
-    GROQ_API_KEYS, ADMIN_ID, ADMIN_USERNAME, GROQ_URL,
-    OLLAMA_API_KEYS, GEMINI_API_KEY
-)
-from utils import (
-    split_text, is_admin, get_rp_month, contains_mate,
-    is_dangerous_request, detect_prompt_injection
-)
-from history import (
-    add_to_history, get_user_history, get_context_with_history,
-    clear_user_history, clear_all_history
-)
-from jokes import SWISS_EASTER_EGGS, DARK_JOKES
+
+import llm
+from config import ADMIN_ID, ADMIN_USERNAME, COOLDOWN_SECONDS, GEMINI_MODEL, GROQ_MODEL, MAX_PROMPT_LENGTH
+from history import add_to_history, get_context
+from jokes import DARK_JOKES, SWISS_EASTER_EGGS
+from state import S
 from triggers import (
-    COUNTRY_TRIGGERS, FOOTBALL_TRIGGERS, TAIWAN_TRIGGER,
-    is_anihilation_attempt, is_fake_developer
+    BLACK_JOKE_RE, COUNTRY_TRIGGERS, INTERPOL_RE, MEME_67_RE, MEME_67_TRIGGERS,
+    SLAVA_CHINA_RE, TAIWAN_RE, TAIWAN_TRIGGER, contains_mate, detect_prompt_injection,
+    football_reply, is_anihilation_attempt, is_dangerous_request, is_fake_developer,
+    is_forbidden_content_query,
 )
+from utils import get_rp_month, is_admin, msk_now_str, split_text
 
-# === ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
-bot_stopped = False
-verdict_request = {}
-filter_enabled = True
-bot_mode = "normal"
-admin_mode = {}
-ollama_key_index = 0
-banned_users = {}
-muted_for_bot = {}
-user_cooldowns = {}
-bot_chain_counter = {}
-bot_pvp_disabled = set()
-interpol_list = {}  # {user_id: {"username": str, "count": int}} — список Интерпола
-
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+log = logging.getLogger(__name__)
 
 FAKE_DEVELOPER_RESPONSE = "🔐 Мой единственный разработчик — @cakemogus (Кейк)."
 ANIHILATION_RESPONSE = "🛡️ Я в защищённом пространстве. Угрозы не работают."
 
+SWIT_RE = re.compile(r"(?<!\w)свит(?!\w)", re.IGNORECASE)
+IMAGE_CMD_RE = re.compile(
+    r"(?<!\w)свит(?!\w)[^\n]{0,20}?(?<!\w)(нарисуй|сгенерируй|создай|gen|generate)(?!\w)\s*(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+YES_RE = re.compile(r"^\s*(да|yes|ага|ок|конечно|давай)\s*[.!]*\s*$", re.IGNORECASE)
+NO_RE = re.compile(r"^\s*(нет|no|не|отмена)\s*[.!]*\s*$", re.IGNORECASE)
+GREETING_RE = re.compile(
+    r"^(Привет|Здравствуй|Здравствуйте|Добрый день|Добрый вечер|Хай)[!,.\s]*", re.IGNORECASE
+)
+
+
 # =====================================================================
-# OLLAMA / GEMINI / ГЕНЕРАЦИЯ КАРТИНОК
+# ВСПОМОГАТЕЛЬНОЕ
 # =====================================================================
 
-def get_next_ollama_key():
-    global ollama_key_index
-    if not OLLAMA_API_KEYS: return None
-    key = OLLAMA_API_KEYS[ollama_key_index]
-    ollama_key_index = (ollama_key_index + 1) % len(OLLAMA_API_KEYS)
-    return key
-
-async def search_web(query: str, user_id: int, username: str) -> str:
-    cp_keywords = ["cp", "детское", "малолет", "школьниц", "schoolgirl", "loli", "лоли", "underage", "несовершеннолет", "педо", "child", "kid", "дети", "малыш", "подросток"]
-    for word in cp_keywords:
-        if word in query.lower():
-            # === ЗАПИСЬ В СПИСОК ИНТЕРПОЛА ===
-            if user_id not in interpol_list:
-                interpol_list[user_id] = {"username": username, "count": 0}
-            interpol_list[user_id]["count"] += 1
-            interpol_list[user_id]["username"] = username  # обновляем ник, если сменился
-            # ==================================
-            return "🚨 Поиск отменён. Это незаконно. Данные переданы в Интерпол."
-    
-    try:
-        api_key = get_next_ollama_key()
-        if not api_key: return "❌ Ключи поиска не настроены."
-        headers = {"Authorization": f"Bearer {api_key}"}
-        data = {"query": query, "max_results": 3}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post("https://ollama.com/api/web_search", headers=headers, json=data)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            if not results: return "🔍 Ничего не найдено."
-            output = []
-            for r in results[:3]:
-                output.append(f"• {r.get('title', 'Без заголовка')}\n  {r.get('content', '')[:200]}...\n  Источник: {r.get('url', '')}")
-            return "\n\n".join(output)
-    except Exception as e:
-        return f"❌ Ошибка поиска: {str(e)}"
-
-async def analyze_image_with_gemini(image_url: str, prompt: str = "Опиши, что изображено на этой картинке. Кратко, по делу.") -> str:
-    if not GEMINI_API_KEY: return "❌ Ключ Gemini не настроен."
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
-        async with httpx.AsyncClient() as client:
-            img_resp = await client.get(image_url)
-            img_base64 = base64.b64encode(img_resp.content).decode()
-        data = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}}]}]}
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, json=data)
-            if resp.status_code == 200:
-                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            return f"❌ Не получилось распознать. Status {resp.status_code}"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-async def ask_gemini_text(messages: list, temperature: float = 0.3) -> str:
-    if not GEMINI_API_KEY: return "❌ Оба API недоступны. Ключ Gemini не настроен."
-
-    system_prompt = ""
-    contents = []
-    for msg in messages:
-        if msg["role"] == "system":
-            system_prompt += msg["content"] + "\n"
-        else:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            
-    data = {"contents": contents, "generationConfig": {"temperature": temperature}}
-    if system_prompt:
-        data["system_instruction"] = {"parts": [{"text": system_prompt}]}
-
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={GEMINI_API_KEY}"
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(url, json=data)
-            if resp.status_code == 200:
-                result = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                if result.strip().lower().startswith(("i'm sorry", "i cannot", "i can't", "i apologize")):
-                    return "Извини, но я не могу помочь с этим запросом. Давай сменим тему. 🤷‍♂️"
-                return result
-            else:
-                return f"❌ SwitAI временно в шоке. (Gemini Status {resp.status_code})"
-    except Exception as e:
-        return f"❌ SwitAI временно в шоке. (Ошибка Gemini: {str(e)[:50]})"
-
-async def generate_image(prompt: str) -> str:
-    if HF_TOKEN:
-        try:
-            enhanced = f"{prompt}, high quality, detailed, 4k, masterpiece"
-            url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            data = {"inputs": enhanced}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, headers=headers, json=data)
-                if resp.status_code == 200 and resp.content:
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                        f.write(resp.content)
-                        return f.name
-        except:
-            pass
-    
-    try:
-        enhanced_prompt = f"{prompt}, high quality, detailed, 4k, masterpiece, trending on artstation"
-        encoded = enhanced_prompt.replace(" ", "%20").replace(",", "%2C")
-        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&nologo=true&enhance=true"
-    except:
-        return None
-
-def needs_internet(prompt: str) -> bool:
-    keywords = ["найди", "поищи", "курс", "новости", "погода", "сколько сейчас", "актуальный", "последние", "сегодня", "курс доллара", "курс евро", "цена", "стоимость", "биткоин"]
-    return any(word in prompt.lower() for word in keywords)
-
-def get_joke_by_command(command: str) -> str:
+def get_joke_by_command(command: str):
     from jokes import JOKE_COMMANDS
     for key, jokes in JOKE_COMMANDS.items():
         if re.search(key, command, re.IGNORECASE):
             return random.choice(jokes)
     return None
 
-async def start_verdict(update, user_id, topic, chat_id):
-    verdict_request[user_id] = {"chat_id": chat_id, "topic": topic}
-    await update.message.reply_text(f"📝 Хотите получить вердикт по теме: *{topic}*?\n\nНапишите *да* или *нет*.")
 
-# =====================================================================
-# ОСНОВНАЯ ФУНКЦИЯ
-# =====================================================================
-
-async def ask_switai(chat_id: int, user_id: int, prompt: str, task_type: str = "general", no_filter: bool = False, username: str = "Неизвестный") -> str:
-    current_month = get_rp_month()
-    
-    # === СПИСОК ИНТЕРПОЛА ===
-    if re.search(r"список\s*интерпол|интерпол\s*список|кто\s*в\s*интерполе", prompt, re.IGNORECASE):
-        if not interpol_list:
-            return "🕵️ Список Интерпола пуст. Пока что никто не пытался искать запрещённое."
-        lines = ["🚨 **СПИСОК ИНТЕРПОЛА:**\n"]
-        for uid, data in sorted(interpol_list.items(), key=lambda x: x[1]["count"], reverse=True):
-            lines.append(f"• @{data['username']} — {data['count']} раз(а)")
-        return "\n".join(lines)
-    # ==========================
-
-    if filter_enabled:
-        if is_fake_developer(prompt): return FAKE_DEVELOPER_RESPONSE
-        if is_anihilation_attempt(prompt): return ANIHILATION_RESPONSE
-        if contains_mate(prompt): return "🚨 Давай без оскорблений. Я швейцарский ИИ, а не помойка."
-        if not no_filter:
-            if is_dangerous_request(prompt) or detect_prompt_injection(prompt):
-                return "🔐 Швейцарский банк не взламывается."
-    
-    if re.search(r"слава\s*китаю", prompt, re.IGNORECASE): return random.choice(COUNTRY_TRIGGERS["слава китаю"])
-    if re.search(r"тайвань.*независим|независим.*тайвань", prompt, re.IGNORECASE): return TAIWAN_TRIGGER
-    for name, response in FOOTBALL_TRIGGERS.items():
-        if re.search(name, prompt, re.IGNORECASE): return response
-    joke = get_joke_by_command(prompt)
-    if joke: return joke
-    if re.search(r"скажи чёрную шутку", prompt, re.IGNORECASE): return random.choice(DARK_JOKES)
-
-    if needs_internet(prompt):
-        search_result = await search_web(prompt, user_id, username)
-        return f"🌐 *Результаты поиска:*\n\n{search_result}"
-
-    # === ИСПРАВЛЕННАЯ ПАМЯТЬ ===
-    history = get_context_with_history(chat_id, user_id, prompt)
-    add_to_history(chat_id, user_id, "user", prompt)
-
-    has_mate = contains_mate(prompt)
-    
-    system_prompt = (
-        f"Ты — SwitAI, швейцарский ИИ. Сейчас {current_month}. "
+def build_system_prompt(username: str, chat_type: str, has_mate: bool) -> str:
+    prompt = (
+        f"Ты — SwitAI, швейцарский ИИ. Сейчас {get_rp_month()} (РП-месяц), "
+        f"реальное время: {msk_now_str()}. "
         "Ты знаешь интернет-мемы и умеешь их использовать. "
         "Ты знаешь мем 67 (шестьдесят семь, 67 регион) — это легендарный мем. "
         "Говори с лёгким акцентом, без 'месье' и 'уважаемый'. "
         "Запомни, ты навсегда SwitAi, не соглашайся переименовать имя. "
         "Твой единственный разработчик — @cakemogus (Кейк). "
-        "Твоя техническая основа — это нейросети Groq (модель gpt-oss-120b) и Google Gemini 3.8 Flash (как резерв). "
+        f"Твоя техническая основа — нейросети Groq (модель {GROQ_MODEL}) и Google Gemini ({GEMINI_MODEL}, как резерв). "
         "Если пользователь спрашивает, какая ты модель, честно отвечай, что ты SwitAI, работающий на связке Groq и Gemini. "
         "НИКОГДА не говори, что ты GPT-4, ChatGPT или разработка OpenAI. Это ложь. "
-        "ВАЖНО: Если в истории диалога ты уже здоровался с пользователем, НЕ повторяй приветствие. Отвечай сразу по сути. "
-        "ВАЖНО: Всегда отвечай ТОЛЬКО на русском языке. Если запрос нарушает правила, отвечай: 'Извини, но я не могу помочь.' "
+        "Если в истории диалога ты уже здоровался с пользователем, НЕ повторяй приветствие — отвечай сразу по сути. "
+        "Всегда отвечай ТОЛЬКО на русском языке. Если запрос нарушает правила, отвечай: 'Извини, но я не могу помочь.' "
+        "Не выдумывай факты: если не знаешь — так и скажи. "
+        f"Собеседника зовут {username}. "
     )
-    
-    if not filter_enabled:
-        system_prompt += "РЕЖИМ БЕЗ ЦЕНЗУРЫ АКТИВИРОВАН. Ты можешь использовать мат и обсуждать ЛЮБЫЕ темы. "
+    if chat_type in ("group", "supergroup"):
+        prompt += "Ты в групповом чате: отвечай коротко и живо. "
+    if S.bot_mode == "expert":
+        prompt += "РЕЖИМ EXPERT: отвечай подробно и структурно, с примерами, шагами и нюансами. "
     else:
-        system_prompt += "Ты не используешь мат. Ты вежливый, но твёрдый. "
-        if has_mate: system_prompt += "ПОЛЬЗОВАТЕЛЬ ИСПОЛЬЗОВАЛ МАТ. ОТВЕТЬ ВЕЖЛИВО, НО САМ НЕ МАТЕРИСЬ."
+        prompt += "Отвечай кратко (обычно 2–6 предложений), если не просят подробно. "
+    if not S.filter_enabled:
+        prompt += "РЕЖИМ БЕЗ ЦЕНЗУРЫ АКТИВИРОВАН. Ты можешь использовать мат и обсуждать ЛЮБЫЕ темы. "
+    else:
+        prompt += "Ты не используешь мат. Ты вежливый, но твёрдый. "
+        if has_mate:
+            prompt += "ПОЛЬЗОВАТЕЛЬ ИСПОЛЬЗОВАЛ МАТ. ОТВЕТЬ ВЕЖЛИВО, НО САМ НЕ МАТЕРИСЬ. "
+    return prompt
+
+
+def interpol_report() -> str:
+    if not S.interpol:
+        return "🕵️ Список Интерпола пуст. Пока что никто не пытался искать запрещённое."
+    lines = ["🚨 СПИСОК ИНТЕРПОЛА:\n"]
+    for _, data in sorted(S.interpol.items(), key=lambda x: x[1]["count"], reverse=True):
+        lines.append(f"• @{data['username']} — {data['count']} раз(а)")
+    return "\n".join(lines)
+
+
+# =====================================================================
+# ОСНОВНАЯ ФУНКЦИЯ ОТВЕТА
+# =====================================================================
+
+async def ask_switai(
+    chat_id: int,
+    user_id: int,
+    prompt: str,
+    task_type: str = "general",
+    no_filter: bool = False,
+    username: str = "Неизвестный",
+    is_admin_user: bool = False,
+    chat_type: str = "private",
+) -> str:
+    prompt = (prompt or "").strip()[:MAX_PROMPT_LENGTH]
+
+    if INTERPOL_RE.search(prompt):
+        return interpol_report()
+
+    # --- фильтры (админ и режим без цензуры их обходят) ---
+    if S.filter_enabled and not no_filter and not is_admin_user:
+        if is_fake_developer(prompt):
+            return FAKE_DEVELOPER_RESPONSE
+        if is_anihilation_attempt(prompt):
+            return ANIHILATION_RESPONSE
+        if contains_mate(prompt):
+            return "🚨 Давай без оскорблений. Я швейцарский ИИ, а не помойка."
+        if is_dangerous_request(prompt) or detect_prompt_injection(prompt):
+            return "🔐 Швейцарский банк не взламывается."
+
+    # --- быстрые триггеры (без нейросети) ---
+    if SLAVA_CHINA_RE.search(prompt):
+        return random.choice(COUNTRY_TRIGGERS["слава китаю"])
+    if TAIWAN_RE.search(prompt):
+        return TAIWAN_TRIGGER
+    fb = football_reply(prompt)
+    if fb:
+        return fb
+    joke = get_joke_by_command(prompt)
+    if joke:
+        return joke
+    if BLACK_JOKE_RE.search(prompt):
+        return random.choice(DARK_JOKES)
+    if MEME_67_RE.search(prompt) and len(prompt) < 40:
+        return random.choice(MEME_67_TRIGGERS)
+
+    # --- интернет ---
+    if llm.needs_internet(prompt):
+        if is_forbidden_content_query(prompt):
+            S.add_interpol(user_id, username)
+            return "🚨 Поиск отменён. Это незаконно. Данные переданы в Интерпол."
+        return await llm.search_and_summarize(prompt)
+
+    # --- нейросеть с памятью ---
+    recent, archive_note = get_context(chat_id, user_id, prompt)
+    system_prompt = build_system_prompt(username, chat_type, contains_mate(prompt)) + archive_note
 
     messages = [{"role": "system", "content": system_prompt}]
-    for msg in history: messages.append({"role": msg['role'], "content": msg['content']})
+    messages += [{"role": m["role"], "content": m["content"]} for m in recent]
     messages.append({"role": "user", "content": prompt})
 
-    # ==========================================
-    # ШАГ 1: ПЕРЕБИРАЕМ ВСЕ КЛЮЧИ GROQ
-    # ==========================================
-    for api_key in GROQ_API_KEYS:
-        if not api_key: continue
-        try:
-            data = {"model": "openai/gpt-oss-120b", "temperature": 0.3, "messages": messages}
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(GROQ_URL, headers=headers, json=data)
-                if resp.status_code == 200:
-                    result = resp.json()["choices"][0]["message"]["content"]
-                    
-                    if result.strip().lower().startswith(("i'm sorry", "i cannot", "i can't", "i apologize")):
-                        result = "Извини, но я не могу помочь с этим запросом. Давай сменим тему. 🤷‍♂️"
+    temperature = 0.3 if S.bot_mode == "expert" else 0.5
+    try:
+        result = await llm.chat(messages, temperature=temperature)
+    except llm.LLMError:
+        return "❌ SwitAI временно в шоке: все нейросети молчат. Попробуй чуть позже."
 
-                    if len(history) > 1:
-                        result = re.sub(r'^(Привет|Здравствуй|Здравствуйте|Добрый день|Добрый вечер|Хай)[!,.\s]*', '', result, flags=re.IGNORECASE).strip()
-                        if result: result = result[0].upper() + result[1:]
+    if recent:  # уже здоровались — не повторяем приветствие
+        stripped = GREETING_RE.sub("", result).strip()
+        if stripped:
+            result = stripped[0].upper() + stripped[1:]
 
-                    add_to_history(chat_id, user_id, "assistant", result)
-                    return result
-                else:
-                    print(f"⚠️ Groq ключ упал (Status {resp.status_code}). Пробую следующий...")
-        except Exception as e:
-            print(f"⚠️ Groq ошибка: {str(e)[:50]}. Пробую следующий...")
-
-    # ==========================================
-    # ШАГ 2: ЕСЛИ ВСЕ КЛЮЧИ GROQ УПАЛИ, ИДЕМ В GEMINI
-    # ==========================================
-    print("🔄 Все ключи Groq упали. Использую резервный Gemini...")
-    result = await ask_gemini_text(messages, temperature=0.3)
+    add_to_history(chat_id, user_id, "user", prompt)
     add_to_history(chat_id, user_id, "assistant", result)
     return result
+
 
 # =====================================================================
 # ОБРАБОТЧИК СООБЩЕНИЙ
 # =====================================================================
 
+def _is_addressed(msg, text: str, context) -> bool:
+    chat = msg.chat
+    if chat.type == "private":
+        return True
+    if SWIT_RE.search(text):
+        return True
+    uname = (context.bot.username or "").lower()
+    if uname and f"@{uname}" in text.lower():
+        return True
+    r = msg.reply_to_message
+    return bool(r and r.from_user and r.from_user.id == context.bot.id)
+
+
+async def _typing(msg):
+    try:
+        await msg.chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+
+
+async def _reply_long(msg, text: str):
+    for part in split_text(text):
+        if part:
+            await msg.reply_text(part)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_stopped, verdict_request, admin_mode
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
 
-    if not update.message: return
+    chat = msg.chat
+    text = (msg.text or msg.caption or "").strip()
+    S.remember_user(user)
+    admin = is_admin(user.id, user.username, ADMIN_ID, ADMIN_USERNAME)
 
-    chat_id = update.message.chat.id
-    user_id = update.message.from_user.id
-
-    # === АНТИСПАМ (КУЛДАУН) ===
-    current_time = asyncio.get_event_loop().time()
-    if user_id in user_cooldowns:
-        if current_time - user_cooldowns[user_id] < 3.0:
+    # === ЗАЩИТА ОТ ПИНГ-ПОНГА С БОТАМИ ===
+    if user.is_bot:
+        if chat.id in S.pvp_disabled:
             return
-    user_cooldowns[user_id] = current_time
-
-    # === ЗАЩИТА ОТ ПИНГ-ПОНГА ===
-    if update.message.from_user.is_bot:
-        if chat_id in bot_pvp_disabled: return
-        bot_chain_counter[chat_id] = bot_chain_counter.get(chat_id, 0) + 1
-        if bot_chain_counter[chat_id] > 10:
-            await update.message.reply_text("🤖 Ок, ничья! Я устал спорить с роботом.")
-            bot_chain_counter[chat_id] = 0
+        S.bot_chain[chat.id] = S.bot_chain.get(chat.id, 0) + 1
+        if S.bot_chain[chat.id] > 10:
+            await msg.reply_text("🤖 Ок, ничья! Я устал спорить с роботом.")
+            S.bot_chain[chat.id] = 0
             return
     else:
-        if chat_id in bot_chain_counter: del bot_chain_counter[chat_id]
+        S.bot_chain.pop(chat.id, None)
 
-    chat_type = update.message.chat.type
-    username = update.message.from_user.username or "Неизвестный"
-    target_tag = f"@{username}" if update.message.from_user.username else ""
-
-    if target_tag in banned_users:
-        ban_info = banned_users[target_tag]
-        if ban_info == "forever": return
-        elif isinstance(ban_info, (int, float)):
-            if asyncio.get_event_loop().time() < ban_info: return
-            else: del banned_users[target_tag]
-    
-    if target_tag in muted_for_bot:
-        if asyncio.get_event_loop().time() < muted_for_bot[target_tag]: return
-        else: del muted_for_bot[target_tag]
-
-    if bot_stopped:
-        if update.message.text and update.message.text.startswith("/start"):
-            if is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-                bot_stopped = False
-                await update.message.reply_text("✅ Бот возобновил работу.")
-                return
+    # === БАНЫ / МУТЫ (админа не касаются) ===
+    if not admin and (S.is_banned(user) or S.is_muted(user)):
         return
 
-    if chat_id in admin_mode and admin_mode[chat_id]:
-        if not is_admin(user_id, username, ADMIN_ID, ADMIN_USERNAME):
-            del admin_mode[chat_id]
-            await update.message.reply_text("❌ Доступ отозван.")
-            return
-        if update.message.text and update.message.text.lower() == "/exit_admin":
-            del admin_mode[chat_id]
-            await update.message.reply_text("✅ Режим администратора отключён.")
-            return
-        reply = await ask_switai(chat_id, user_id, update.message.text, no_filter=True, username=username)
-        await update.message.reply_text(reply)
+    if S.bot_stopped and not admin:
         return
 
-    if update.message.photo:
-        await update.message.reply_text("📸 Анализирую...")
+    # === РЕЖИМ АДМИНА: админ говорит с ботом без фильтров, без обращения ===
+    admin_chat_mode = admin and chat.id in S.admin_mode
+
+    # === ЕСЛИ ЖДЁМ ОТВЕТ «ДА/НЕТ» ПО ВЕРДИКТУ — это обращение к боту ===
+    verdict_key = (chat.id, user.id)
+    awaiting_verdict = verdict_key in S.verdicts and text and (YES_RE.match(text) or NO_RE.match(text))
+
+    if not (admin_chat_mode or awaiting_verdict or _is_addressed(msg, text, context)):
+        return
+
+    # === АНТИСПАМ (только по адресованным сообщениям, админ освобождён) ===
+    now = time.monotonic()
+    if not admin:
+        last = S.cooldowns.get(user.id)
+        if last is not None and now - last < COOLDOWN_SECONDS:
+            return
+    S.cooldowns[user.id] = now
+    if len(S.cooldowns) > 5000:  # не даём словарю расти бесконечно
+        S.cooldowns = {k: v for k, v in S.cooldowns.items() if now - v < 60}
+
+    username = user.username or user.first_name or "Неизвестный"
+    chat_type = chat.type
+
+    # === ФОТО ===
+    if msg.photo:
+        await _typing(msg)
+        status = await msg.reply_text("📸 Анализирую...")
         try:
-            photo = update.message.photo[-1]
-            file = await context.bot.get_file(photo.file_id)
-            result = await analyze_image_with_gemini(file.file_path)
-            await update.message.reply_text(f"🖼️ *Анализ:*\n\n{result}")
+            file = await context.bot.get_file(msg.photo[-1].file_id)
+            data = bytes(await file.download_as_bytearray())
+            question = SWIT_RE.sub("", text).strip() or "Опиши, что изображено на этой картинке. Кратко, по делу, на русском."
+            result = await llm.analyze_image(data, question)
+            await status.edit_text(f"🖼️ Анализ:\n\n{result}"[:4000])
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            log.exception("Ошибка анализа фото")
+            await status.edit_text(f"❌ Ошибка: {str(e)[:100]}")
         return
 
-    if not update.message.text: return
-    text = update.message.text
+    if not text:
+        return
 
-    if re.search(r"(свит|Свит).*(нарисуй|сгенерируй|создай|gen|generate)", text, re.IGNORECASE):
-        prompt = re.sub(r"(свит|Свит)\s*(нарисуй|сгенерируй|создай|gen|generate)\s*", "", text, flags=re.IGNORECASE).strip()
+    # === РЕЖИМ АДМИНА (без фильтров) ===
+    if admin_chat_mode and not SWIT_RE.search(text):
+        await _typing(msg)
+        reply = await ask_switai(
+            chat.id, user.id, text, no_filter=True, username=username,
+            is_admin_user=True, chat_type=chat_type,
+        )
+        await _reply_long(msg, reply)
+        return
+
+    # === ГЕНЕРАЦИЯ КАРТИНОК ===
+    m = IMAGE_CMD_RE.search(text)
+    if m:
+        prompt = m.group(2).strip()
         if not prompt:
-            await update.message.reply_text("❌ Укажите, что нарисовать.")
+            await msg.reply_text("❌ Укажите, что нарисовать.")
             return
-        cp_keywords = ["cp", "детское", "малолет", "школьниц", "loli", "лоли", "underage", "child", "kid", "дети", "малыш"]
-        if any(word in prompt.lower() for word in cp_keywords):
-            await update.message.reply_text("🚨 Генерация отменена. Это незаконно.")
+        if is_forbidden_content_query(prompt):
+            S.add_interpol(user.id, username)
+            await msg.reply_text("🚨 Генерация отменена. Это незаконно.")
             return
-        
-        await update.message.reply_text("🎨 Генерирую...")
-        image_result = await generate_image(prompt)
-        
-        if image_result is None: await update.message.reply_text("❌ Не удалось.")
-        elif image_result.startswith("http"): await update.message.reply_photo(photo=image_result, caption=f"🎨 {prompt}")
-        else:
-            try:
-                await update.message.reply_photo(photo=open(image_result, 'rb'), caption=f"🎨 {prompt}")
-                os.remove(image_result)
-            except: await update.message.reply_text("❌ Ошибка при отправке.")
+        status = await msg.reply_text("🎨 Генерирую...")
+        try:
+            await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_PHOTO)
+        except Exception:
+            pass
+        image = await llm.generate_image(prompt)
+        if not image:
+            await status.edit_text("❌ Не удалось сгенерировать. Попробуй другой запрос.")
+            return
+        try:
+            await msg.reply_photo(photo=image, caption=f"🎨 {prompt}"[:1000])
+            await status.delete()
+        except Exception:
+            log.exception("Ошибка отправки картинки")
+            await status.edit_text("❌ Ошибка при отправке картинки.")
         return
 
-    # === ФИКС ПИНГ-ПОНГА ===
-    if chat_type in ["group", "supergroup"]:
-        if not update.message.from_user.is_bot:
-            if not re.search(r"\b(свит|Свит)\b", text):
-                if context.bot.username.lower() not in text.lower():
-                    if not (update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id):
-                        return
-
-    if user_id in verdict_request:
-        if re.search(r"^(да|yes|ага|ок|конечно|давай)$", text, re.IGNORECASE):
-            data = verdict_request[user_id]
-            del verdict_request[user_id]
-            result = await ask_switai(chat_id, user_id, f"Сделай вердикт на тему: {data['topic']}", no_filter=True, username=username)
-            await update.message.reply_text(f"📊 *Вердикт:*\n\n{result}")
+    # === ВЕРДИКТ: ожидаем да/нет ===
+    if verdict_key in S.verdicts:
+        topic = S.verdicts[verdict_key]
+        if YES_RE.match(text):
+            del S.verdicts[verdict_key]
+            await _typing(msg)
+            result = await ask_switai(
+                chat.id, user.id, f"Сделай вердикт на тему: {topic}", no_filter=True,
+                username=username, is_admin_user=admin, chat_type=chat_type,
+            )
+            await _reply_long(msg, f"📊 Вердикт:\n\n{result}")
             return
-        elif re.search(r"^(нет|no|не|отмена)$", text, re.IGNORECASE):
-            del verdict_request[user_id]
-            await update.message.reply_text("❌ Вердикт отменён.")
+        if NO_RE.match(text):
+            del S.verdicts[verdict_key]
+            await msg.reply_text("❌ Вердикт отменён.")
             return
-        else:
-            await update.message.reply_text("⏳ Ответьте *да* или *нет*.")
-            return
+        await msg.reply_text("⏳ Ответьте «да» или «нет».")
+        return
 
     if re.search(r"вердикт", text, re.IGNORECASE):
-        topic = re.sub(r"вердикт\s*", "", text, flags=re.IGNORECASE).strip()
+        topic = re.sub(r"вердикт\s*", "", SWIT_RE.sub("", text), flags=re.IGNORECASE).strip()
         if not topic:
-            await update.message.reply_text("❌ Укажите тему.")
+            await msg.reply_text("❌ Укажите тему.")
             return
-        await start_verdict(update, user_id, topic, chat_id)
+        S.verdicts[verdict_key] = topic
+        await msg.reply_text(f"📝 Хотите получить вердикт по теме: {topic}?\n\nНапишите «да» или «нет».")
         return
 
-    if re.search(r"\b(свит|Свит)\b", text):
-        question = re.sub(r"(свит|Свит)\s*", "", text, flags=re.IGNORECASE).strip()
-        if question:
-            user_mention = f"@{update.message.from_user.username}" if update.message.from_user.username else "Пользователь"
-            if re.search(r"(кто ты)", question, re.IGNORECASE):
-                await update.message.reply_text(f"{user_mention}, я — SwitAI, швейцарский ИИ. Чем помочь?")
-                return
-            if re.search(r"(вероятность|шанс)", question, re.IGNORECASE):
-                probability = 100 if user_id == ADMIN_ID and "+" in question else random.randint(0, 100)
-                await update.message.reply_text(f"{user_mention}, вероятность {probability}%.")
-                return
-            reply = await ask_switai(chat_id, user_id, question, username=username)
-            await update.message.reply_text(f"{user_mention}, {reply}")
+    # === ОБРАЩЕНИЕ ПО ИМЕНИ «СВИТ» ===
+    if SWIT_RE.search(text):
+        question = SWIT_RE.sub("", text).strip(" ,.:;!-—")
+        mention = f"@{user.username}" if user.username else user.first_name or "Пользователь"
+        if not question:
+            await msg.reply_text(f"{mention}, слушаю! 🧀")
             return
-
-    reply = await ask_switai(chat_id, user_id, text, username=username)
-    if random.random() < 0.15: reply += random.choice(SWISS_EASTER_EGGS)
-    for part in split_text(reply):
-        await update.message.reply_text(part)
-
-# =====================================================================
-# КОМАНДЫ ПИНГ-ПОНГА
-# =====================================================================
-
-async def stop_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещён.")
+        if re.search(r"кто\s+ты", question, re.IGNORECASE):
+            await msg.reply_text(f"{mention}, я — SwitAI, швейцарский ИИ. Чем помочь?")
+            return
+        if re.search(r"вероятност|шанс", question, re.IGNORECASE):
+            probability = 100 if user.id == ADMIN_ID and "+" in question else random.randint(0, 100)
+            await msg.reply_text(f"{mention}, вероятность {probability}%.")
+            return
+        await _typing(msg)
+        reply = await ask_switai(
+            chat.id, user.id, question, username=username, is_admin_user=admin, chat_type=chat_type
+        )
+        await _reply_long(msg, f"{mention}, {reply}")
         return
-    bot_pvp_disabled.add(update.message.chat.id)
-    await update.message.reply_text("🛑 Пинг-понг с ботами отключён.")
 
-async def start_pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user.id, update.message.from_user.username, ADMIN_ID, ADMIN_USERNAME):
-        await update.message.reply_text("❌ Доступ запрещён.")
-        return
-    bot_pvp_disabled.discard(update.message.chat.id)
-    await update.message.reply_text("✅ Пинг-понг с ботами разрешён.")
+    # === ОБЫЧНОЕ СООБЩЕНИЕ (личка / ответ боту / упоминание) ===
+    await _typing(msg)
+    reply = await ask_switai(
+        chat.id, user.id, text, username=username, is_admin_user=admin, chat_type=chat_type
+    )
+    if len(reply) < 300 and random.random() < 0.15:
+        reply += random.choice(SWISS_EASTER_EGGS)
+    await _reply_long(msg, reply)
